@@ -4,9 +4,23 @@ const path = require('path');
 const fs = require('fs').promises;
 const { v4: uuidv4 } = require('uuid');
 const archiver = require('archiver');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Rate limiters
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // Limit each IP to 20 upload requests per windowMs
+  message: 'Too many upload requests, please try again later.'
+});
+
+const projectLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 project requests per windowMs
+  message: 'Too many requests, please try again later.'
+});
 
 // Middleware
 app.use(express.json({ limit: '50mb' }));
@@ -47,10 +61,40 @@ const upload = multer({
   }
 });
 
+// Helper function to validate and sanitize project ID
+function validateProjectId(id) {
+  // Only allow alphanumeric characters and hyphens (UUID format)
+  if (!/^[a-zA-Z0-9-]+$/.test(id)) {
+    throw new Error('Invalid project ID format');
+  }
+  // Additional length check (UUIDs are 36 characters with hyphens)
+  if (id.length > 50) {
+    throw new Error('Invalid project ID length');
+  }
+  return id;
+}
+
+// Helper function to safely construct and validate project file path
+function getProjectFilePath(id) {
+  const validatedId = validateProjectId(id);
+  const filename = `${validatedId}.json`;
+  const filepath = path.join('projects', filename);
+  
+  // Resolve to absolute path and ensure it's within the projects directory
+  const resolvedPath = path.resolve(filepath);
+  const projectsDir = path.resolve('projects');
+  
+  if (!resolvedPath.startsWith(projectsDir)) {
+    throw new Error('Invalid project path');
+  }
+  
+  return filepath;
+}
+
 // Routes
 
 // Upload floor plan
-app.post('/api/upload', upload.single('floorplan'), async (req, res) => {
+app.post('/api/upload', uploadLimiter, upload.single('floorplan'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -70,12 +114,11 @@ app.post('/api/upload', upload.single('floorplan'), async (req, res) => {
 app.use('/uploads', express.static('uploads'));
 
 // Save project
-app.post('/api/projects/save', async (req, res) => {
+app.post('/api/projects/save', projectLimiter, async (req, res) => {
   try {
     const { projectId, projectName, projectData } = req.body;
-    const id = projectId || uuidv4();
-    const filename = `${id}.json`;
-    const filepath = path.join('projects', filename);
+    const id = projectId ? validateProjectId(projectId) : uuidv4();
+    const filepath = getProjectFilePath(id);
     
     const project = {
       id,
@@ -93,19 +136,24 @@ app.post('/api/projects/save', async (req, res) => {
 });
 
 // Load project
-app.get('/api/projects/:id', async (req, res) => {
+app.get('/api/projects/:id', projectLimiter, async (req, res) => {
   try {
-    const { id } = req.params;
-    const filepath = path.join('projects', `${id}.json`);
+    const filepath = getProjectFilePath(req.params.id);
     const data = await fs.readFile(filepath, 'utf-8');
     res.json(JSON.parse(data));
   } catch (error) {
-    res.status(404).json({ error: 'Project not found' });
+    if (error.code === 'ENOENT') {
+      res.status(404).json({ error: 'Project not found' });
+    } else if (error.message === 'Invalid project ID format' || error.message === 'Invalid project path' || error.message === 'Invalid project ID length') {
+      res.status(400).json({ error: 'Invalid project ID' });
+    } else {
+      res.status(500).json({ error: 'Error loading project' });
+    }
   }
 });
 
 // List projects
-app.get('/api/projects', async (req, res) => {
+app.get('/api/projects', projectLimiter, async (req, res) => {
   try {
     const files = await fs.readdir('projects');
     const projects = [];
@@ -130,7 +178,7 @@ app.get('/api/projects', async (req, res) => {
 });
 
 // Generate and download IMDF files
-app.post('/api/generate-imdf', async (req, res) => {
+app.post('/api/generate-imdf', projectLimiter, async (req, res) => {
   try {
     const { projectData } = req.body;
     
