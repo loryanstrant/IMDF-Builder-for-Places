@@ -1,0 +1,26 @@
+{
+  "name": "imdf-builder-for-places",
+  "version": "1.0.0",
+  "description": "A solution to build IMDF files for use with Microsoft Places",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "imdf",
+    "microsoft-places",
+    "indoor-mapping"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "archiver": "^6.0.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^8.2.1",
+    "fabric": "^6.7.1",
+    "multer": "^2.0.2",
+    "pdf-lib": "^1.17.1",
+    "uuid": "^9.0.1"
+  }
+}
