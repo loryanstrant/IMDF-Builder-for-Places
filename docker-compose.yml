@@ -2,7 +2,9 @@ version: '3.8'
 
 services:
   imdf-builder:
-    build: .
+    image: ghcr.io/loryanstrant/imdf-builder-for-places:latest
+    # Uncomment the line below and comment the image line above to build locally instead
+    # build: .
     ports:
       - "3000:3000"
     volumes:

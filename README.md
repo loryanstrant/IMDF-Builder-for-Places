@@ -20,18 +20,19 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
 
 ### Using Docker (Recommended)
 
+The easiest way to run the application is using the pre-built Docker image from GitHub Container Registry:
+
 1. **Install Docker Desktop**
    - Download from [docker.com](https://www.docker.com/products/docker-desktop)
    - Install and start Docker Desktop
 
 2. **Run the Application**
    ```bash
-   # Clone the repository
-   git clone https://github.com/loryanstrant/IMDF-Builder-for-Places.git
-   cd IMDF-Builder-for-Places
-
-   # Start the application with Docker Compose
+   # Using Docker Compose (recommended)
    docker-compose up -d
+
+   # Or using Docker directly
+   docker run -d -p 3000:3000 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/app/uploads ghcr.io/loryanstrant/imdf-builder-for-places:latest
 
    # The application will be available at http://localhost:3000
    ```
@@ -40,6 +41,8 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
    ```bash
    docker-compose down
    ```
+
+**Note**: The pre-built image is automatically updated from the main branch. If you want to build locally instead, edit `docker-compose.yml` and uncomment the `build: .` line.
 
 ### Running Locally (Without Docker)
 
@@ -62,6 +65,24 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
 
 3. **Access the Application**
    - Open your browser and navigate to `http://localhost:3000`
+
+### Building Docker Image Locally (Optional)
+
+If you want to build the Docker image yourself instead of using the pre-built one:
+
+```bash
+# Clone the repository
+git clone https://github.com/loryanstrant/IMDF-Builder-for-Places.git
+cd IMDF-Builder-for-Places
+
+# Build the Docker image
+docker build -t imdf-builder .
+
+# Run the container
+docker run -d -p 3000:3000 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/app/uploads imdf-builder
+
+# Or edit docker-compose.yml to use 'build: .' instead of the image
+```
 
 ## How to Use
 
@@ -163,6 +184,22 @@ IMDF-Builder-for-Places/
 - Based on Node.js 18 Alpine image
 - Lightweight and efficient
 - Persistent volumes for projects and uploads
+- Available on GitHub Container Registry (GHCR)
+- Image: `ghcr.io/loryanstrant/imdf-builder-for-places:latest`
+
+**Available Image Tags:**
+- `latest` - Latest build from the main branch
+- `main` - Latest build from the main branch (same as latest)
+- `v*.*.*` - Specific version tags (when releases are created)
+
+**Pulling the Image:**
+```bash
+# Pull the latest version
+docker pull ghcr.io/loryanstrant/imdf-builder-for-places:latest
+
+# Pull a specific version (example)
+docker pull ghcr.io/loryanstrant/imdf-builder-for-places:v1.0.0
+```
 
 ## Browser Compatibility
 
