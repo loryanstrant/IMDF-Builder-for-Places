@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IMDF Builder for Microsoft Places</title>
+    <link rel="stylesheet" href="/css/styles.css">
+    <script src="/lib/fabric.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>IMDF Builder for Microsoft Places</h1>
+            <p class="subtitle">Create indoor maps compatible with Microsoft Places</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Left Sidebar - Tools and Properties -->
+            <aside class="sidebar">
+                <div class="panel">
+                    <h2>Project</h2>
+                    <div class="form-group">
+                        <label for="projectName">Project Name:</label>
+                        <input type="text" id="projectName" placeholder="My Building">
+                    </div>
+                    <div class="button-group">
+                        <button id="newProjectBtn" class="btn btn-primary">New Project</button>
+                        <button id="saveProjectBtn" class="btn btn-secondary">Save Project</button>
+                        <button id="loadProjectBtn" class="btn btn-secondary">Load Project</button>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <h2>Floor Plan</h2>
+                    <div class="form-group">
+                        <label for="floorplanUpload">Upload Floor Plan (PDF or Image):</label>
+                        <input type="file" id="floorplanUpload" accept=".pdf,.png,.jpg,.jpeg">
+                        <button id="uploadBtn" class="btn btn-primary">Upload</button>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <h2>Building Info</h2>
+                    <div class="form-group">
+                        <label for="buildingName">Building Name:</label>
+                        <input type="text" id="buildingName" placeholder="Main Building">
+                    </div>
+                    <div class="form-group">
+                        <label for="venueCoords">Venue Coordinates (Lat, Lon):</label>
+                        <input type="text" id="venueCoords" placeholder="47.6062, -122.3321" value="0, 0">
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <h2>Levels</h2>
+                    <div class="form-group">
+                        <label for="levelName">Level Name:</label>
+                        <input type="text" id="levelName" placeholder="Ground Floor">
+                    </div>
+                    <div class="form-group">
+                        <label for="levelOrdinal">Level Number:</label>
+                        <input type="number" id="levelOrdinal" value="0">
+                    </div>
+                    <button id="addLevelBtn" class="btn btn-primary">Add Level</button>
+                    <div id="levelsList" class="items-list"></div>
+                </div>
+
+                <div class="panel">
+                    <h2>Place Items</h2>
+                    <div class="tool-buttons">
+                        <button id="placeUnitBtn" class="btn btn-tool" data-tool="unit">Place Unit (Room)</button>
+                        <button id="placeAmenityBtn" class="btn btn-tool" data-tool="amenity">Place Amenity</button>
+                        <button id="placeFixtureBtn" class="btn btn-tool" data-tool="fixture">Place Fixture</button>
+                        <button id="placeOpeningBtn" class="btn btn-tool" data-tool="opening">Place Opening (Door)</button>
+                        <button id="selectModeBtn" class="btn btn-tool active" data-tool="select">Select Mode</button>
+                        <button id="deleteBtn" class="btn btn-danger">Delete Selected</button>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <h2>Selected Item Properties</h2>
+                    <div id="propertiesPanel">
+                        <p class="hint">Select an item to edit its properties</p>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Center - Canvas -->
+            <main class="canvas-area">
+                <div class="canvas-controls">
+                    <button id="zoomInBtn" class="btn btn-sm">Zoom In</button>
+                    <button id="zoomOutBtn" class="btn btn-sm">Zoom Out</button>
+                    <button id="resetViewBtn" class="btn btn-sm">Reset View</button>
+                    <span id="canvasInfo" class="info-text"></span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="mainCanvas"></canvas>
+                </div>
+            </main>
+
+            <!-- Right Sidebar - Export -->
+            <aside class="sidebar-right">
+                <div class="panel">
+                    <h2>Export</h2>
+                    <div class="export-info">
+                        <p>Generate IMDF files compatible with Microsoft Places</p>
+                    </div>
+                    <button id="exportBtn" class="btn btn-success">Export IMDF Files</button>
+                </div>
+
+                <div class="panel">
+                    <h2>Items Summary</h2>
+                    <div id="itemsSummary">
+                        <div class="summary-item">
+                            <span>Levels:</span>
+                            <span id="levelCount">0</span>
+                        </div>
+                        <div class="summary-item">
+                            <span>Units:</span>
+                            <span id="unitCount">0</span>
+                        </div>
+                        <div class="summary-item">
+                            <span>Amenities:</span>
+                            <span id="amenityCount">0</span>
+                        </div>
+                        <div class="summary-item">
+                            <span>Fixtures:</span>
+                            <span id="fixtureCount">0</span>
+                        </div>
+                        <div class="summary-item">
+                            <span>Openings:</span>
+                            <span id="openingCount">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <h2>Help</h2>
+                    <div class="help-text">
+                        <p><strong>Quick Start:</strong></p>
+                        <ol>
+                            <li>Enter your project name and building info</li>
+                            <li>Upload a floor plan image or PDF</li>
+                            <li>Add at least one level</li>
+                            <li>Use the tools to place units, amenities, and other items</li>
+                            <li>Configure properties for each item</li>
+                            <li>Export IMDF files</li>
+                        </ol>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <!-- Load Project Modal -->
+    <div id="loadProjectModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Load Project</h2>
+            <div id="projectsList"></div>
+        </div>
+    </div>
+
+    <script src="/js/app.js"></script>
+</body>
+</html>

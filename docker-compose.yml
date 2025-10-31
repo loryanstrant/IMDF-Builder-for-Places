@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  imdf-builder:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./projects:/app/projects
+      - ./uploads:/app/uploads
+    environment:
+      - NODE_ENV=production
