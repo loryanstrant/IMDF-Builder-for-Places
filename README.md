@@ -16,6 +16,10 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
 - 📦 **Export**: Generate complete IMDF file packages as ZIP archives
 - 🐳 **Docker Support**: Easy deployment with Docker and Docker Compose
 
+
+<img width="1280" height="720" alt="508439876-18132b6d-a9e5-442c-80ca-4a68871fbd1e" src="https://github.com/user-attachments/assets/d4df6899-b70f-451e-9d73-d1c2b2cf975a" />
+
+
 ## Quick Start
 
 ### Using Docker (Recommended)
