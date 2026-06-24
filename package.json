@@ -15,12 +15,12 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "archiver": "^6.0.1",
-    "express": "^4.22.2",
-    "express-rate-limit": "^8.2.2",
-    "fabric": "^7.2.0",
-    "multer": "^2.1.1",
+    "archiver": "^8.0.0",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "fabric": "^7.4.0",
+    "multer": "^2.2.0",
     "pdf-lib": "^1.17.1",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.1"
   }
 }
