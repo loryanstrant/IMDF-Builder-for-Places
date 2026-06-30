@@ -8,6 +8,9 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const LOCAL_COORDINATE_SCALE = 0.05;
+const DEFAULT_FOOTPRINT_SIZE = 0.001;
+const FOOTPRINT_PADDING = 0.00005;
 
 // Rate limiters
 const uploadLimiter = rateLimit({
@@ -211,46 +214,21 @@ function generateIMDFFiles(projectData) {
     building,
     levels = [],
     units = [],
-    amenities = [],
     fixtures = [],
-    openings = [],
-    anchors = []
   } = projectData;
 
-  const venueId = venue?.id || uuidv4();
   const buildingId = building?.id || uuidv4();
+  const footprintId = building?.footprintId || uuidv4();
+  const localBounds = getLocalBounds({ building, levels, units, fixtures });
+  const footprintCoordinates = createFootprintCoordinates(venue?.coordinates, localBounds);
 
-  // Generate venue.geojson
-  const venueFeatures = {
-    type: 'FeatureCollection',
-    features: [{
-      type: 'Feature',
-      id: venueId,
-      feature_type: 'venue',
-      geometry: {
-        type: 'Point',
-        coordinates: venue?.coordinates || [0, 0]
-      },
-      properties: {
-        category: 'business',
-        restriction: 'restricted',
-        name: venue?.name || 'Venue',
-        alt_name: venue?.alt_name || {}
-      }
-    }]
-  };
-
-  // Generate building.geojson
   const buildingFeatures = {
     type: 'FeatureCollection',
     features: [{
       type: 'Feature',
       id: buildingId,
       feature_type: 'building',
-      geometry: {
-        type: 'Polygon',
-        coordinates: building?.coordinates || [[[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]]
-      },
+      geometry: null,
       properties: {
         category: 'unspecified',
         restriction: 'restricted',
@@ -260,7 +238,23 @@ function generateIMDFFiles(projectData) {
     }]
   };
 
-  // Generate level.geojson
+  const footprintFeatures = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      id: footprintId,
+      feature_type: 'footprint',
+      geometry: {
+        type: 'Polygon',
+        coordinates: footprintCoordinates
+      },
+      properties: {
+        category: 'building',
+        building: buildingId
+      }
+    }]
+  };
+
   const levelFeatures = {
     type: 'FeatureCollection',
     features: levels.map(level => ({
@@ -269,10 +263,12 @@ function generateIMDFFiles(projectData) {
       feature_type: 'level',
       geometry: {
         type: 'Polygon',
-        coordinates: level.coordinates || [[[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]]
+        coordinates: isLocalCanvasPolygon(level.coordinates)
+          ? footprintCoordinates
+          : normalizePolygonCoordinates(level.coordinates, venue?.coordinates, localBounds)
       },
       properties: {
-        ordinal: level.ordinal || 0,
+        ordinal: level.ordinal ?? 0,
         category: 'unspecified',
         restriction: 'restricted',
         name: level.name || `Level ${level.ordinal}`,
@@ -282,7 +278,6 @@ function generateIMDFFiles(projectData) {
     }))
   };
 
-  // Generate unit.geojson
   const unitFeatures = {
     type: 'FeatureCollection',
     features: units.map(unit => ({
@@ -291,7 +286,7 @@ function generateIMDFFiles(projectData) {
       feature_type: 'unit',
       geometry: {
         type: 'Polygon',
-        coordinates: unit.coordinates || [[[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]]
+        coordinates: normalizePolygonCoordinates(unit.coordinates, venue?.coordinates, localBounds)
       },
       properties: {
         category: unit.category || 'unspecified',
@@ -299,123 +294,188 @@ function generateIMDFFiles(projectData) {
         accessibility: unit.accessibility || [],
         name: unit.name || 'Unit',
         alt_name: unit.alt_name || {},
-        display_point: unit.display_point || { type: 'Point', coordinates: [0, 0] },
+        display_point: normalizeDisplayPoint(unit.display_point, venue?.coordinates, localBounds),
         level: unit.levelId
       }
     }))
   };
 
-  // Generate amenity.geojson
-  const amenityFeatures = {
-    type: 'FeatureCollection',
-    features: amenities.map(amenity => ({
-      type: 'Feature',
-      id: amenity.id || uuidv4(),
-      feature_type: 'amenity',
-      geometry: {
-        type: 'Point',
-        coordinates: amenity.coordinates || [0, 0]
-      },
-      properties: {
-        category: amenity.category || 'seating',
-        accessibility: amenity.accessibility || [],
-        name: amenity.name || 'Amenity',
-        alt_name: amenity.alt_name || {},
-        unit: amenity.unitId,
-        level: amenity.levelId
-      }
-    }))
-  };
-
-  // Generate fixture.geojson
   const fixtureFeatures = {
     type: 'FeatureCollection',
-    features: fixtures.map(fixture => ({
-      type: 'Feature',
-      id: fixture.id || uuidv4(),
-      feature_type: 'fixture',
-      geometry: {
-        type: fixture.geometryType || 'Point',
-        coordinates: fixture.coordinates || [0, 0]
-      },
-      properties: {
-        category: fixture.category || 'wall',
-        level: fixture.levelId
-      }
-    }))
+    features: fixtures
+      .filter(fixture => fixture.geometryType === 'Polygon' || fixture.geometryType === 'MultiPolygon')
+      .map(fixture => ({
+        type: 'Feature',
+        id: fixture.id || uuidv4(),
+        feature_type: 'fixture',
+        geometry: {
+          type: fixture.geometryType,
+          coordinates: fixture.geometryType === 'MultiPolygon'
+            ? fixture.coordinates
+            : normalizePolygonCoordinates(fixture.coordinates, venue?.coordinates, localBounds)
+        },
+        properties: {
+          category: fixture.category || 'furniture',
+          level: fixture.levelId
+        }
+      }))
   };
 
-  // Generate opening.geojson
-  const openingFeatures = {
-    type: 'FeatureCollection',
-    features: openings.map(opening => ({
-      type: 'Feature',
-      id: opening.id || uuidv4(),
-      feature_type: 'opening',
-      geometry: {
-        type: 'LineString',
-        coordinates: opening.coordinates || [[0, 0], [0, 1]]
-      },
-      properties: {
-        category: opening.category || 'door',
-        accessibility: opening.accessibility || [],
-        door: opening.door || 'no',
-        level: opening.levelId
-      }
-    }))
-  };
-
-  // Generate anchor.geojson
-  const anchorFeatures = {
-    type: 'FeatureCollection',
-    features: anchors.map(anchor => ({
-      type: 'Feature',
-      id: anchor.id || uuidv4(),
-      feature_type: 'anchor',
-      geometry: {
-        type: 'Point',
-        coordinates: anchor.coordinates || [0, 0]
-      },
-      properties: {
-        unit: anchor.unitId,
-        address: anchor.address || {}
-      }
-    }))
-  };
-
-  // Generate empty collections for other required files
-  const emptyCollection = {
+  const sectionFeatures = {
     type: 'FeatureCollection',
     features: []
   };
 
-  // Generate manifest.json
-  const manifest = {
-    version: '1.0.0',
-    language: 'en',
-    created: new Date().toISOString(),
-    updated: new Date().toISOString()
-  };
-
   return {
-    'venue.geojson': venueFeatures,
     'building.geojson': buildingFeatures,
+    'footprint.geojson': footprintFeatures,
     'level.geojson': levelFeatures,
     'unit.geojson': unitFeatures,
-    'amenity.geojson': amenityFeatures,
-    'fixture.geojson': fixtureFeatures,
-    'opening.geojson': openingFeatures,
-    'anchor.geojson': anchorFeatures,
-    'address.geojson': emptyCollection,
-    'detail.geojson': emptyCollection,
-    'footprint.geojson': emptyCollection,
-    'geojson-spec.geojson': emptyCollection,
-    'kiosk.geojson': emptyCollection,
-    'occupant.geojson': emptyCollection,
-    'relationship.geojson': emptyCollection,
-    'section.geojson': emptyCollection,
-    'manifest.json': manifest
+    'section.geojson': sectionFeatures,
+    'fixture.geojson': fixtureFeatures
   };
+}
+
+function normalizePolygonCoordinates(coordinates, venueCoordinates, localBounds) {
+  if (isValidPolygonCoordinates(coordinates)) {
+    return isLocalCanvasPolygon(coordinates)
+      ? translateLocalPolygonToVenue(coordinates, venueCoordinates, localBounds)
+      : coordinates;
+  }
+
+  return createFootprintCoordinates(venueCoordinates, localBounds);
+}
+
+function normalizeDisplayPoint(displayPoint, venueCoordinates, localBounds) {
+  const coordinates = displayPoint?.coordinates;
+  if (!Array.isArray(coordinates) || coordinates.length !== 2) {
+    return {
+      type: 'Point',
+      coordinates: getVenueLonLat(venueCoordinates)
+    };
+  }
+
+  return {
+    type: 'Point',
+    coordinates: isLocalCanvasCoordinate(coordinates)
+      ? translateLocalCoordinateToVenue(coordinates, venueCoordinates, localBounds)
+      : coordinates
+  };
+}
+
+function isValidPolygonCoordinates(coordinates) {
+  return Array.isArray(coordinates)
+    && Array.isArray(coordinates[0])
+    && Array.isArray(coordinates[0][0])
+    && coordinates[0].length >= 4;
+}
+
+function isLocalCanvasPolygon(coordinates) {
+  if (!isValidPolygonCoordinates(coordinates)) {
+    return false;
+  }
+
+  return coordinates.flat(2).every(value => typeof value === 'number' && value >= 0 && value < 1);
+}
+
+function isLocalCanvasCoordinate(coordinates) {
+  if (!Array.isArray(coordinates)) {
+    return false;
+  }
+
+  return coordinates.every(value => typeof value === 'number' && value >= 0 && value < 1);
+}
+
+function translateLocalPolygonToVenue(coordinates, venueCoordinates, localBounds) {
+  return coordinates.map(ring => ring.map(point => translateLocalCoordinateToVenue(point, venueCoordinates, localBounds)));
+}
+
+function translateLocalCoordinateToVenue(coordinates, venueCoordinates, localBounds) {
+  const [originLon, originLat] = getVenueLonLat(venueCoordinates);
+  const minX = localBounds?.minX ?? 0;
+  const minY = localBounds?.minY ?? 0;
+
+  return [
+    originLon + ((coordinates[0] - minX) * LOCAL_COORDINATE_SCALE),
+    originLat + ((coordinates[1] - minY) * LOCAL_COORDINATE_SCALE)
+  ];
+}
+
+function getVenueLonLat(venueCoordinates) {
+  if (!Array.isArray(venueCoordinates) || venueCoordinates.length !== 2) {
+    return [0, 0];
+  }
+
+  const [lat, lon] = venueCoordinates;
+  return [lon, lat];
+}
+
+function createFootprintCoordinates(venueCoordinates, localBounds) {
+  const [lon, lat] = getVenueLonLat(venueCoordinates);
+  if (!localBounds) {
+    return createDefaultFootprint(lon, lat);
+  }
+
+  const width = Math.max(
+    (localBounds.maxX - localBounds.minX) * LOCAL_COORDINATE_SCALE,
+    DEFAULT_FOOTPRINT_SIZE
+  );
+  const height = Math.max(
+    (localBounds.maxY - localBounds.minY) * LOCAL_COORDINATE_SCALE,
+    DEFAULT_FOOTPRINT_SIZE
+  );
+
+  return [[
+    [lon - FOOTPRINT_PADDING, lat - FOOTPRINT_PADDING],
+    [lon - FOOTPRINT_PADDING, lat + height + FOOTPRINT_PADDING],
+    [lon + width + FOOTPRINT_PADDING, lat + height + FOOTPRINT_PADDING],
+    [lon + width + FOOTPRINT_PADDING, lat - FOOTPRINT_PADDING],
+    [lon - FOOTPRINT_PADDING, lat - FOOTPRINT_PADDING]
+  ]];
+}
+
+function createDefaultFootprint(lon, lat) {
+  return [[
+    [lon, lat],
+    [lon, lat + DEFAULT_FOOTPRINT_SIZE],
+    [lon + DEFAULT_FOOTPRINT_SIZE, lat + DEFAULT_FOOTPRINT_SIZE],
+    [lon + DEFAULT_FOOTPRINT_SIZE, lat],
+    [lon, lat]
+  ]];
+}
+
+function getLocalBounds({ building, levels, units, fixtures }) {
+  const points = [];
+  collectLocalPolygonPoints(building?.coordinates, points);
+  levels.forEach(level => collectLocalPolygonPoints(level.coordinates, points));
+  units.forEach(unit => collectLocalPolygonPoints(unit.coordinates, points));
+  fixtures.forEach(fixture => collectLocalPolygonPoints(fixture.coordinates, points));
+
+  if (points.length === 0) {
+    return null;
+  }
+
+  return points.reduce((bounds, point) => ({
+    minX: Math.min(bounds.minX, point[0]),
+    minY: Math.min(bounds.minY, point[1]),
+    maxX: Math.max(bounds.maxX, point[0]),
+    maxY: Math.max(bounds.maxY, point[1])
+  }), {
+    minX: points[0][0],
+    minY: points[0][1],
+    maxX: points[0][0],
+    maxY: points[0][1]
+  });
+}
+
+function collectLocalPolygonPoints(coordinates, points) {
+  if (!isValidPolygonCoordinates(coordinates) || !isLocalCanvasPolygon(coordinates)) {
+    return;
+  }
+
+  coordinates.forEach(ring => {
+    ring.forEach(point => points.push(point));
+  });
 }
 
 // Start server
