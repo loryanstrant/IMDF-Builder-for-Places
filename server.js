@@ -12,20 +12,21 @@ const PORT = process.env.PORT || 3000;
 // Rate limiters
 const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // Limit each IP to 20 upload requests per windowMs
-  message: 'Too many upload requests, please try again later.'
+  max: 200, // Keep accidental loops bounded without blocking normal local testing
+  message: { error: 'Too many upload requests, please try again later.' }
 });
 
 const projectLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100, // Limit each IP to 100 project requests per windowMs
-  message: 'Too many requests, please try again later.'
+  message: { error: 'Too many requests, please try again later.' }
 });
 
 // Middleware
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.static('public'));
+app.use('/pdfjs', express.static(path.join(__dirname, 'node_modules/pdfjs-dist/build')));
 
 // Create directories if they don't exist
 const ensureDirectories = async () => {

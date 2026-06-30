@@ -13,6 +13,8 @@ class IMDFBuilder {
         this.selectedObject = null;
         this.projectId = null;
         this.floorplanImage = null;
+        this.floorplanObject = null;
+        this.pdfjsLib = null;
         
         this.init();
     }
@@ -410,11 +412,22 @@ class IMDFBuilder {
                 body: formData
             });
 
-            const result = await response.json();
+            const responseText = await response.text();
+            let result;
+
+            try {
+                result = responseText ? JSON.parse(responseText) : {};
+            } catch (parseError) {
+                throw new Error(responseText || `Upload failed with status ${response.status}`);
+            }
+
+            if (!response.ok) {
+                throw new Error(result.error || `Upload failed with status ${response.status}`);
+            }
             
             if (result.success) {
                 this.floorplanImage = result.path;
-                await this.loadFloorplanToCanvas(result.path);
+                await this.loadFloorplanToCanvas(result.path, result.mimetype);
                 alert('Floor plan uploaded successfully!');
             } else {
                 alert('Upload failed: ' + result.error);
@@ -424,34 +437,79 @@ class IMDFBuilder {
         }
     }
 
-    async loadFloorplanToCanvas(imagePath) {
-        return new Promise((resolve, reject) => {
-            fabric.Image.fromURL(imagePath, (img) => {
-                if (!img) {
-                    reject(new Error('Failed to load image'));
-                    return;
-                }
+    async loadFloorplanToCanvas(filePath, mimetype = '') {
+        const imagePath = this.isPdfFloorplan(filePath, mimetype)
+            ? await this.renderPdfFirstPageToImage(filePath)
+            : filePath;
+        const img = await fabric.Image.fromURL(imagePath);
 
-                // Scale image to fit canvas
-                const scale = Math.min(
-                    this.canvas.width / img.width,
-                    this.canvas.height / img.height
-                ) * 0.9;
+        if (!img) {
+            throw new Error('Failed to load floor plan');
+        }
 
-                img.scale(scale);
-                img.set({
-                    left: this.canvas.width / 2,
-                    top: this.canvas.height / 2,
-                    originX: 'center',
-                    originY: 'center',
-                    selectable: false,
-                    evented: false
-                });
+        if (this.floorplanObject) {
+            this.canvas.remove(this.floorplanObject);
+        }
 
-                this.canvas.setBackgroundImage(img, this.canvas.renderAll.bind(this.canvas));
-                resolve();
-            });
+        const canvasWidth = this.canvas.getWidth();
+        const canvasHeight = this.canvas.getHeight();
+        const scale = Math.min(
+            canvasWidth / img.width,
+            canvasHeight / img.height
+        ) * 0.9;
+
+        img.scale(scale);
+        img.set({
+            left: canvasWidth / 2,
+            top: canvasHeight / 2,
+            originX: 'center',
+            originY: 'center',
+            selectable: false,
+            evented: false,
+            excludeFromExport: true
         });
+
+        this.floorplanObject = img;
+        this.canvas.add(img);
+
+        if (typeof this.canvas.sendObjectToBack === 'function') {
+            this.canvas.sendObjectToBack(img);
+        } else if (typeof this.canvas.moveObjectTo === 'function') {
+            this.canvas.moveObjectTo(img, 0);
+        }
+
+        this.canvas.requestRenderAll();
+    }
+
+    isPdfFloorplan(filePath, mimetype = '') {
+        return mimetype === 'application/pdf' || filePath.toLowerCase().endsWith('.pdf');
+    }
+
+    async loadPdfJs() {
+        if (!this.pdfjsLib) {
+            this.pdfjsLib = await import('/pdfjs/pdf.min.mjs');
+            this.pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.min.mjs';
+        }
+        return this.pdfjsLib;
+    }
+
+    async renderPdfFirstPageToImage(pdfPath) {
+        const pdfjsLib = await this.loadPdfJs();
+        const pdf = await pdfjsLib.getDocument({ url: pdfPath }).promise;
+        const page = await pdf.getPage(1);
+        const viewport = page.getViewport({ scale: 2 });
+        const pdfCanvas = document.createElement('canvas');
+        const context = pdfCanvas.getContext('2d');
+
+        pdfCanvas.width = viewport.width;
+        pdfCanvas.height = viewport.height;
+
+        await page.render({
+            canvasContext: context,
+            viewport
+        }).promise;
+
+        return pdfCanvas.toDataURL('image/png');
     }
 
     zoomIn() {
@@ -589,6 +647,7 @@ class IMDFBuilder {
             this.fixtures = [];
             this.openings = [];
             this.currentLevel = null;
+            this.floorplanObject = null;
 
             // Load project data
             this.projectId = project.id;
@@ -675,6 +734,7 @@ class IMDFBuilder {
             this.currentLevel = null;
             this.projectId = null;
             this.floorplanImage = null;
+            this.floorplanObject = null;
             
             document.getElementById('projectName').value = '';
             document.getElementById('buildingName').value = '';
