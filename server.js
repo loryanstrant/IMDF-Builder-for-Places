@@ -271,6 +271,12 @@ function generateIMDFFiles(projectData) {
   const buildingId = building?.id || randomUUID();
   const origin = getVenueOrigin(venue);
 
+  // Sections (desk pools) ride in the units array flagged featureType:
+  // 'section' and export to their own file — Places locates bookable desks
+  // through their parent Section correlated to a section feature.
+  const sections = units.filter(u => u.featureType === 'section');
+  const roomUnits = units.filter(u => u.featureType !== 'section');
+
   // The canvas produces tiny coordinates near [0, 0] (pixels / 100000, in
   // degrees). Microsoft Places requires georeferenced geometry, so shift the
   // whole drawing onto the venue's real location by centring its bounding box
@@ -384,30 +390,37 @@ function generateIMDFFiles(projectData) {
     }))
   };
 
-  // Generate unit.geojson
+  // Units and sections share a shape; only the feature_type and file differ.
+  const drawnFeature = (unit, featureType) => ({
+    type: 'Feature',
+    id: unit.id || randomUUID(),
+    feature_type: featureType,
+    geometry: {
+      type: 'Polygon',
+      coordinates: projectPolygon(unit.coordinates || [[[0, 0], [0, 0.001], [0.001, 0.001], [0.001, 0], [0, 0]]])
+    },
+    properties: {
+      category: unit.category || 'unspecified',
+      // Default to unrestricted: "restricted" marks the room off-limits in Places.
+      restriction: unit.restriction || null,
+      name: toLabels(unit.name || 'Unit'),
+      alt_name: toLabels(unit.alt_name),
+      display_point: {
+        type: 'Point',
+        coordinates: projectPoint(unit.display_point?.coordinates || [centerX, centerY])
+      },
+      level_id: unit.levelId || null
+    }
+  });
+
   const unitFeatures = {
     type: 'FeatureCollection',
-    features: units.map(unit => ({
-      type: 'Feature',
-      id: unit.id || randomUUID(),
-      feature_type: 'unit',
-      geometry: {
-        type: 'Polygon',
-        coordinates: projectPolygon(unit.coordinates || [[[0, 0], [0, 0.001], [0.001, 0.001], [0.001, 0], [0, 0]]])
-      },
-      properties: {
-        category: unit.category || 'unspecified',
-        // Default to unrestricted: "restricted" marks the room off-limits in Places.
-        restriction: unit.restriction || null,
-        name: toLabels(unit.name || 'Unit'),
-        alt_name: toLabels(unit.alt_name),
-        display_point: {
-          type: 'Point',
-          coordinates: projectPoint(unit.display_point?.coordinates || [centerX, centerY])
-        },
-        level_id: unit.levelId || null
-      }
-    }))
+    features: roomUnits.map(u => drawnFeature(u, 'unit'))
+  };
+
+  const sectionFeatures = {
+    type: 'FeatureCollection',
+    features: sections.map(s => drawnFeature(s, 'section'))
   };
 
   // Generate fixture.geojson
@@ -439,6 +452,9 @@ function generateIMDFFiles(projectData) {
     'unit.geojson': unitFeatures
   };
 
+  if (sections.length > 0) {
+    files['section.geojson'] = sectionFeatures;
+  }
   if (fixtures.length > 0) {
     files['fixture.geojson'] = fixtureFeatures;
   }
@@ -526,7 +542,7 @@ function validatePlacesCompatibility(files) {
 function generateMapFeaturesCSV(projectData) {
   const files = generateIMDFFiles(projectData);
   const placeIdsByFeatureId = new Map();
-  const directoryTypes = { building: 'Building', level: 'Floor', unit: 'Room' };
+  const directoryTypes = { building: 'Building', level: 'Floor', unit: 'Room', section: 'Section' };
 
   const buildingFeature = files['building.geojson'].features[0];
   if (projectData.building?.placeId) {
@@ -542,7 +558,8 @@ function generateMapFeaturesCSV(projectData) {
   };
 
   const rows = [['PlaceId', 'Name', 'Type', 'FeatureType', 'FeatureId', 'FeatureName', 'FeatureCategory']];
-  for (const filename of ['building.geojson', 'level.geojson', 'unit.geojson']) {
+  for (const filename of ['building.geojson', 'level.geojson', 'unit.geojson', 'section.geojson']) {
+    if (!files[filename]) continue;
     for (const feature of files[filename].features) {
       const featureName = feature.properties.name?.en || '';
       const placeId = placeIdsByFeatureId.get(feature.id) || '';
