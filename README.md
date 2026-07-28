@@ -37,9 +37,9 @@ The easiest way to run the application is using the pre-built Docker image from 
    docker-compose up -d
 
    # Or using Docker directly
-   docker run -d -p 3000:3000 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/app/uploads ghcr.io/loryanstrant/imdf-builder-for-places:latest
+   docker run -d -p 3009:3009 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/app/uploads ghcr.io/loryanstrant/imdf-builder-for-places:latest
 
-   # The application will be available at http://localhost:3000
+   # The application will be available at http://localhost:3009
    ```
 
 3. **Stop the Application**
@@ -55,7 +55,7 @@ Copy `.env.example` to `.env` (Docker Compose reads it automatically) to change:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `HOST_PORT` | `3000` | Host port the app is published on — change it if `3000` is already taken. |
+| `HOST_PORT` | `3009` | Host port the app is published on — change it if `3009` is already taken. |
 | `TZ` | `UTC` | Container timezone, any IANA name (e.g. `Australia/Sydney`). |
 
 ```bash
@@ -84,7 +84,7 @@ docker-compose up -d
    ```
 
 3. **Access the Application**
-   - Open your browser and navigate to `http://localhost:3000`
+   - Open your browser and navigate to `http://localhost:3009`
 
 ### Building Docker Image Locally (Optional)
 
@@ -99,7 +99,7 @@ cd IMDF-Builder-for-Places
 docker build -t imdf-builder .
 
 # Run the container
-docker run -d -p 3000:3000 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/app/uploads imdf-builder
+docker run -d -p 3009:3009 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/app/uploads imdf-builder
 
 # Or edit docker-compose.yml to use 'build: .' instead of the image
 ```
@@ -238,7 +238,7 @@ docker pull ghcr.io/loryanstrant/imdf-builder-for-places:v1.0.0
 
 ### Issue: Docker container won't start
 - Ensure Docker Desktop is running
-- Check if port 3000 is available — or set `HOST_PORT` in `.env` to a free port
+- Check if port 3009 is available — or set `HOST_PORT` in `.env` to a free port
 - Try `docker-compose down` and `docker-compose up -d`
 
 ### Issue: Items not appearing on canvas

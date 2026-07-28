@@ -4,3 +4,9 @@ projects/
 *.log
 .DS_Store
 .env
+
+# Local Places import working files
+imdf-export*.zip
+imdf_correlated*.zip
+imdf_correlated*/
+mapfeatures.csv
