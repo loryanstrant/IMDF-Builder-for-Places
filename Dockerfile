@@ -13,6 +13,6 @@ COPY . .
 
 RUN mkdir -p uploads projects
 
-EXPOSE 3009
+EXPOSE 3000
 
 CMD ["npm", "start"]

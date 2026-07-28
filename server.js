@@ -10,7 +10,7 @@ const rateLimit = require('express-rate-limit');
 const { version } = require('./package.json');
 
 const app = express();
-const PORT = process.env.PORT || 3009;
+const PORT = process.env.PORT || 3000;
 
 // Rate limiters
 const uploadLimiter = rateLimit({

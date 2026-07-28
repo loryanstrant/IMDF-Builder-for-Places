@@ -6,8 +6,8 @@ services:
     # Uncomment the line below and comment the image line above to build locally instead
     # build: .
     ports:
-      # Change HOST_PORT in .env (or your environment) to avoid conflicts on 3009.
-      - "${HOST_PORT:-3009}:3009"
+      # Change HOST_PORT in .env (or your environment) to avoid conflicts on 3000.
+      - "${HOST_PORT:-3000}:3000"
     volumes:
       - ./projects:/app/projects
       - ./uploads:/app/uploads
