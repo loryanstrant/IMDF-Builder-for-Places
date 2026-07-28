@@ -178,6 +178,9 @@ class IMDFBuilder {
             case 'unit':
                 this.placeUnit(pointer);
                 break;
+            case 'section':
+                this.placeSection(pointer);
+                break;
             case 'amenity':
                 this.placeAmenity(pointer);
                 break;
@@ -204,6 +207,7 @@ class IMDFBuilder {
         const unit = {
             id: this.generateUUID(),
             name: `Unit ${this.units.length + 1}`,
+            featureType: 'unit',
             category: 'room',
             restriction: null,
             placeId: null,
@@ -214,6 +218,47 @@ class IMDFBuilder {
         rect.imdfData = unit;
         this.units.push(unit);
         this.canvas.add(rect);
+        this.updateCounts();
+    }
+
+    // Sections are desk pools: Places locates a bookable desk through the
+    // Section directory object correlated to a section feature on the map.
+    placeSection(pointer) {
+        const rect = new fabric.Rect({
+            left: pointer.x,
+            top: pointer.y,
+            width: 120,
+            height: 100,
+            fill: 'rgba(255, 140, 0, 0.3)',
+            stroke: '#ff8c00',
+            strokeWidth: 2
+        });
+
+        const section = {
+            id: this.generateUUID(),
+            name: `Section ${this.units.filter(u => u.featureType === 'section').length + 1}`,
+            featureType: 'section',
+            category: 'unspecified',
+            restriction: null,
+            placeId: null,
+            levelId: this.currentLevel.id,
+            fabricObject: rect
+        };
+
+        rect.imdfData = section;
+        this.units.push(section);
+        this.canvas.add(rect);
+        this.updateCounts();
+    }
+
+    applyFeatureTypeStyle(fabricObject, featureType) {
+        if (!fabricObject) return;
+        const isSection = featureType === 'section';
+        fabricObject.set({
+            fill: isSection ? 'rgba(255, 140, 0, 0.3)' : 'rgba(0, 120, 212, 0.3)',
+            stroke: isSection ? '#ff8c00' : '#0078d4'
+        });
+        this.canvas.renderAll();
         this.updateCounts();
     }
 
@@ -325,12 +370,21 @@ class IMDFBuilder {
             `;
         }
 
-        // Units can be correlated to a Microsoft Places directory object (a Room).
+        // Drawn shapes can be correlated to a Microsoft Places directory object:
+        // units to a Room, sections (desk pools) to a Section.
         if (this.units.some(u => u.id === data.id)) {
+            const isSection = data.featureType === 'section';
             html += `
                 <div class="property-field">
+                    <label>Map Feature:</label>
+                    <select id="prop-featuretype">
+                        <option value="unit" ${!isSection ? 'selected' : ''}>Unit (Room)</option>
+                        <option value="section" ${isSection ? 'selected' : ''}>Section (Desk Pool)</option>
+                    </select>
+                </div>
+                <div class="property-field">
                     <label>Microsoft Places ID (optional):</label>
-                    <input type="text" id="prop-placeid" value="${data.placeId || ''}" placeholder="Room PlaceId from Get-PlaceV3" />
+                    <input type="text" id="prop-placeid" value="${data.placeId || ''}" placeholder="${isSection ? 'Section' : 'Room'} PlaceId from Get-PlaceV3" />
                 </div>
             `;
         }
@@ -354,10 +408,15 @@ class IMDFBuilder {
         const nameInput = document.getElementById('prop-name');
         const categoryInput = document.getElementById('prop-category');
         const placeIdInput = document.getElementById('prop-placeid');
+        const featureTypeInput = document.getElementById('prop-featuretype');
 
         if (nameInput) data.name = nameInput.value;
         if (categoryInput) data.category = categoryInput.value;
         if (placeIdInput) data.placeId = placeIdInput.value.trim() || null;
+        if (featureTypeInput && featureTypeInput.value !== (data.featureType || 'unit')) {
+            data.featureType = featureTypeInput.value;
+            this.applyFeatureTypeStyle(data.fabricObject, data.featureType);
+        }
 
         alert('Properties updated!');
     }
@@ -637,6 +696,7 @@ class IMDFBuilder {
             units: this.units.map(u => ({
                 id: u.id,
                 name: u.name,
+                featureType: u.featureType || 'unit',
                 category: u.category,
                 restriction: u.restriction,
                 placeId: u.placeId || null,
@@ -775,13 +835,14 @@ class IMDFBuilder {
             // Load units
             if (data.units) {
                 data.units.forEach(unitData => {
+                    const isSection = unitData.featureType === 'section';
                     const rect = new fabric.Rect({
                         left: 100,
                         top: 100,
                         width: 100,
                         height: 100,
-                        fill: 'rgba(0, 120, 212, 0.3)',
-                        stroke: '#0078d4',
+                        fill: isSection ? 'rgba(255, 140, 0, 0.3)' : 'rgba(0, 120, 212, 0.3)',
+                        stroke: isSection ? '#ff8c00' : '#0078d4',
                         strokeWidth: 2
                     });
                     unitData.fabricObject = rect;
@@ -955,8 +1016,10 @@ class IMDFBuilder {
     }
 
     updateCounts() {
+        const sections = this.units.filter(u => u.featureType === 'section').length;
         document.getElementById('levelCount').textContent = this.levels.length;
-        document.getElementById('unitCount').textContent = this.units.length;
+        document.getElementById('unitCount').textContent = this.units.length - sections;
+        document.getElementById('sectionCount').textContent = sections;
         document.getElementById('amenityCount').textContent = this.amenities.length;
         document.getElementById('fixtureCount').textContent = this.fixtures.length;
         document.getElementById('openingCount').textContent = this.openings.length;

@@ -125,6 +125,7 @@ docker run -d -p 3000:3000 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/a
 ### Step 4: Place Items on the Floor Plan
 1. Select a tool from the "Place Items" section:
    - **Place Unit**: For rooms, offices, conference rooms
+   - **Place Section**: For desk pools — the area a group of bookable desks sits in
    - **Place Amenity**: For desks, seating, facilities
    - **Place Fixture**: For walls, windows
    - **Place Opening**: For doors, entrances
@@ -170,13 +171,18 @@ The import correlates each IMDF feature to an object in the Places directory
 3. Make sure each floor's `SortOrder` in the Places directory equals the
    level's number in the builder (`Set-PlaceV3 -Identity <floorPlaceId>
    -SortOrder <n>`), and each row's directory object matches its feature type
-   (Building row → Building, Level row → Floor, Unit row → Room).
-4. Run the correlation and create the map:
+   (Building row → Building, Level row → Floor, Unit row → Room,
+   Section row → Section).
+4. For bookable desks: desks are located through their parent Section (desk
+   pool). Draw a Section over the desk area and correlate it to that Section
+   object's PlaceId — without it, reserving a desk reports it couldn't be
+   located on the map.
+5. Run the correlation and create the map:
    ```powershell
    Import-MapCorrelations -FilePath .\imdf-export.zip -CorrelationsFilePath .\mapfeatures.csv
    New-Map -BuildingId <buildingPlaceId> -FilePath .\imdf_correlated.zip
    ```
-5. The map can take up to an hour to appear in Places.
+6. The map can take up to an hour to appear in Places.
 
 > **Note:** Places enforces an undocumented subset of the IMDF spec and
 > reports violations with misleading errors (an unrecognised property fails
