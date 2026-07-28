@@ -141,22 +141,48 @@ docker run -d -p 3009:3009 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/a
 
 ### Step 6: Export IMDF Files
 1. Click the "Export IMDF Files" button in the right sidebar
-2. A ZIP file will be downloaded containing all required IMDF files:
-   - venue.geojson
-   - building.geojson
-   - level.geojson
-   - unit.geojson
-   - amenity.geojson
-   - fixture.geojson
-   - opening.geojson
-   - anchor.geojson
-   - manifest.json
-   - And other required empty files
+2. Two downloads are produced:
+   - `imdf-export.zip` — the IMDF package Microsoft Places accepts:
+     building.geojson, footprint.geojson, level.geojson, unit.geojson
+     (plus fixture.geojson when fixtures exist). Places rejects zips
+     containing any other files, so nothing else is included.
+   - `mapfeatures.csv` — a pre-filled correlations file for
+     `Import-MapCorrelations` (see below)
 
-### Step 7: Upload to Microsoft Places
-1. Extract the downloaded ZIP file
-2. Follow Microsoft's documentation to upload the files to Microsoft Places
-3. Reference: [Configure Maps in Microsoft Places](https://learn.microsoft.com/en-us/microsoft-365/places/configure-maps-in-places)
+Feature ids are stable: re-exporting the same project produces the same ids,
+so a correlations CSV you have already filled in stays valid.
+
+### Step 7: Import into Microsoft Places
+The import correlates each IMDF feature to an object in the Places directory
+(created with `New-Place`). Full reference:
+[Configure Maps in Microsoft Places](https://learn.microsoft.com/en-us/microsoft-365/places/configure-maps-in-places).
+
+1. Find your directory objects and their PlaceIds:
+   ```powershell
+   Get-PlaceV3 -AncestorId <buildingPlaceId> | ft DisplayName,PlaceId,Type,SortOrder
+   ```
+2. Enter the PlaceIds in the builder (all optional — you can also fill the CSV
+   by hand): the building's ID under "Building Info", each floor's ID by
+   clicking the level in the Levels list, each room's ID in the unit's
+   properties panel. Then export again — `mapfeatures.csv` comes out
+   pre-correlated. Rows may be left uncorrelated (blank PlaceId), but the
+   building and every floor must be correlated before import.
+3. Make sure each floor's `SortOrder` in the Places directory equals the
+   level's number in the builder (`Set-PlaceV3 -Identity <floorPlaceId>
+   -SortOrder <n>`), and each row's directory object matches its feature type
+   (Building row → Building, Level row → Floor, Unit row → Room).
+4. Run the correlation and create the map:
+   ```powershell
+   Import-MapCorrelations -FilePath .\imdf-export.zip -CorrelationsFilePath .\mapfeatures.csv
+   New-Map -BuildingId <buildingPlaceId> -FilePath .\imdf_correlated.zip
+   ```
+5. The map can take up to an hour to appear in Places.
+
+> **Note:** Places enforces an undocumented subset of the IMDF spec and
+> reports violations with misleading errors (an unrecognised property fails
+> `New-Map` with "Invalid JSON format ... Expected token '}' not found" even
+> though the JSON is valid). The exporter validates every package against the
+> known-accepted schema before download and reports real problems clearly.
 
 ## IMDF Compliance
 

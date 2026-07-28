@@ -212,6 +212,20 @@ app.post('/api/generate-imdf', projectLimiter, async (req, res) => {
   }
 });
 
+// Generate the Microsoft Places correlations CSV (mapfeatures.csv) matching
+// the exported IMDF package, replacing Import-MapCorrelations' extract pass.
+app.post('/api/generate-mapfeatures', projectLimiter, async (req, res) => {
+  try {
+    const { projectData } = req.body;
+    const csv = generateMapFeaturesCSV(projectData);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename=mapfeatures.csv');
+    res.send(csv);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // IMDF "name"-type fields are localised label dictionaries ({"en": "Lobby"}),
 // not plain strings — Microsoft Places rejects the package otherwise.
 function toLabels(value) {
@@ -330,7 +344,9 @@ function generateIMDFFiles(projectData) {
     type: 'FeatureCollection',
     features: [{
       type: 'Feature',
-      id: randomUUID(),
+      // Stable across exports (persisted with the project) so a filled-in
+      // Places correlations CSV keeps matching regenerated packages.
+      id: building?.footprintId || randomUUID(),
       feature_type: 'footprint',
       geometry: {
         type: 'Polygon',
@@ -381,7 +397,8 @@ function generateIMDFFiles(projectData) {
       },
       properties: {
         category: unit.category || 'unspecified',
-        restriction: unit.restriction || 'restricted',
+        // Default to unrestricted: "restricted" marks the room off-limits in Places.
+        restriction: unit.restriction || null,
         name: toLabels(unit.name || 'Unit'),
         alt_name: toLabels(unit.alt_name),
         display_point: {
@@ -426,7 +443,122 @@ function generateIMDFFiles(projectData) {
     files['fixture.geojson'] = fixtureFeatures;
   }
 
+  validatePlacesCompatibility(files);
   return files;
+}
+
+// Microsoft Places parses IMDF with a strict, undocumented schema and reports
+// violations with misleading errors (an unknown property becomes "Invalid JSON
+// format ... Expected token '}' not found"). Catch those mistakes at export
+// time with a clear message instead. The property lists mirror what
+// Import-MapCorrelations itself emits, i.e. the set Places is known to accept.
+const PLACES_FILE_ALLOWLIST = new Set([
+  'building.geojson', 'footprint.geojson', 'level.geojson', 'unit.geojson',
+  'section.geojson', 'fixture.geojson'
+]);
+const PLACES_PROPERTY_ALLOWLIST = {
+  building: ['category', 'restriction', 'name', 'alt_name', 'display_point'],
+  footprint: ['category', 'name', 'building_ids'],
+  level: ['ordinal', 'category', 'restriction', 'outdoor', 'name', 'short_name', 'building_ids'],
+  unit: ['category', 'restriction', 'name', 'alt_name', 'display_point', 'level_id'],
+  section: ['category', 'restriction', 'name', 'alt_name', 'display_point', 'level_id'],
+  fixture: ['category', 'name', 'level_id']
+};
+const LABEL_PROPERTIES = ['name', 'alt_name', 'short_name'];
+
+function validatePlacesCompatibility(files) {
+  const problems = [];
+
+  for (const [filename, collection] of Object.entries(files)) {
+    if (!PLACES_FILE_ALLOWLIST.has(filename)) {
+      problems.push(`${filename}: Places rejects files outside ${[...PLACES_FILE_ALLOWLIST].join(', ')}`);
+      continue;
+    }
+
+    for (const feature of collection.features) {
+      const type = feature.feature_type;
+      const label = `${filename} feature ${feature.id}`;
+      const allowed = PLACES_PROPERTY_ALLOWLIST[type] || [];
+
+      for (const key of Object.keys(feature.properties)) {
+        if (!allowed.includes(key)) {
+          problems.push(`${label}: property "${key}" is not accepted by Places for ${type}`);
+        }
+      }
+
+      for (const key of LABEL_PROPERTIES) {
+        const value = feature.properties[key];
+        if (value !== undefined && value !== null && typeof value !== 'object') {
+          problems.push(`${label}: "${key}" must be a localized label object like {"en": "..."}, not a plain string`);
+        }
+      }
+
+      if (type === 'building' && feature.geometry !== null) {
+        problems.push(`${label}: building geometry must be null (the outline belongs in footprint.geojson)`);
+      }
+      if (type === 'level') {
+        if (!Number.isInteger(feature.properties.ordinal)) {
+          problems.push(`${label}: level ordinal must be an integer`);
+        }
+        if (feature.properties.outdoor !== false) {
+          problems.push(`${label}: level requires "outdoor": false`);
+        }
+        if (!Array.isArray(feature.properties.building_ids) || feature.properties.building_ids.length === 0) {
+          problems.push(`${label}: level requires a non-empty building_ids array`);
+        }
+      }
+      if (type === 'unit' && !feature.properties.level_id) {
+        problems.push(`${label}: unit requires level_id (assign the unit to a level)`);
+      }
+    }
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`Export is not Microsoft Places compatible:\n${problems.join('\n')}`);
+  }
+}
+
+// Build the correlations CSV consumed by Import-MapCorrelations, pre-filled
+// with the feature ids from the export (which is all its "extract" pass
+// produces) plus any Microsoft Places directory ids entered in the builder.
+// Remaining blanks: paste in the PlaceIds from
+// Get-PlaceV3 -AncestorId <buildingPlaceId>.
+function generateMapFeaturesCSV(projectData) {
+  const files = generateIMDFFiles(projectData);
+  const placeIdsByFeatureId = new Map();
+  const directoryTypes = { building: 'Building', level: 'Floor', unit: 'Room' };
+
+  const buildingFeature = files['building.geojson'].features[0];
+  if (projectData.building?.placeId) {
+    placeIdsByFeatureId.set(buildingFeature.id, projectData.building.placeId);
+  }
+  for (const item of [...(projectData.levels || []), ...(projectData.units || [])]) {
+    if (item.id && item.placeId) placeIdsByFeatureId.set(item.id, item.placeId);
+  }
+
+  const csvField = (value) => {
+    const str = value === null || value === undefined ? '' : String(value);
+    return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+  };
+
+  const rows = [['PlaceId', 'Name', 'Type', 'FeatureType', 'FeatureId', 'FeatureName', 'FeatureCategory']];
+  for (const filename of ['building.geojson', 'level.geojson', 'unit.geojson']) {
+    for (const feature of files[filename].features) {
+      const featureName = feature.properties.name?.en || '';
+      const placeId = placeIdsByFeatureId.get(feature.id) || '';
+      rows.push([
+        placeId,
+        placeId ? featureName : '',
+        placeId ? directoryTypes[feature.feature_type] : '',
+        feature.feature_type.charAt(0).toUpperCase() + feature.feature_type.slice(1),
+        feature.id,
+        featureName,
+        feature.properties.category || 'unspecified'
+      ]);
+    }
+  }
+
+  return rows.map(row => row.map(csvField).join(',')).join('\r\n') + '\r\n';
 }
 
 // Error-handling middleware — ensure API errors return JSON, never an HTML error

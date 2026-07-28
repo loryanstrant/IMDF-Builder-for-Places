@@ -75,6 +75,10 @@
                         <label for="venueCoords">Venue Coordinates (Lat, Lon):</label>
                         <input type="text" id="venueCoords" placeholder="47.6062, -122.3321" value="0, 0">
                     </div>
+                    <div class="form-group">
+                        <label for="buildingPlaceId">Microsoft Places Building ID (optional):</label>
+                        <input type="text" id="buildingPlaceId" placeholder="PlaceId from Get-PlaceV3">
+                    </div>
                 </div>
 
                 <div class="panel">
@@ -129,7 +133,8 @@
                 <div class="panel">
                     <h2>Export</h2>
                     <div class="export-info">
-                        <p>Generate IMDF files compatible with Microsoft Places</p>
+                        <p>Generate IMDF files compatible with Microsoft Places, plus a
+                        pre-filled <code>mapfeatures.csv</code> for <code>Import-MapCorrelations</code></p>
                     </div>
                     <button id="exportBtn" class="btn btn-success">Export IMDF Files</button>
                 </div>

@@ -13,6 +13,10 @@ class IMDFBuilder {
         this.selectedObject = null;
         this.projectId = null;
         this.floorplanImage = null;
+        // Persisted so re-exports keep the same IMDF feature ids — a filled-in
+        // Microsoft Places correlations CSV stays valid across exports.
+        this.buildingId = null;
+        this.footprintId = null;
         
         this.init();
     }
@@ -201,7 +205,8 @@ class IMDFBuilder {
             id: this.generateUUID(),
             name: `Unit ${this.units.length + 1}`,
             category: 'room',
-            restriction: 'restricted',
+            restriction: null,
+            placeId: null,
             levelId: this.currentLevel.id,
             fabricObject: rect
         };
@@ -320,6 +325,16 @@ class IMDFBuilder {
             `;
         }
 
+        // Units can be correlated to a Microsoft Places directory object (a Room).
+        if (this.units.some(u => u.id === data.id)) {
+            html += `
+                <div class="property-field">
+                    <label>Microsoft Places ID (optional):</label>
+                    <input type="text" id="prop-placeid" value="${data.placeId || ''}" placeholder="Room PlaceId from Get-PlaceV3" />
+                </div>
+            `;
+        }
+
         html += `
             <button id="updatePropertiesBtn" class="btn btn-primary" style="width: 100%; margin-top: 10px;">
                 Update Properties
@@ -338,9 +353,11 @@ class IMDFBuilder {
     updateSelectedProperties(data) {
         const nameInput = document.getElementById('prop-name');
         const categoryInput = document.getElementById('prop-category');
+        const placeIdInput = document.getElementById('prop-placeid');
 
         if (nameInput) data.name = nameInput.value;
         if (categoryInput) data.category = categoryInput.value;
+        if (placeIdInput) data.placeId = placeIdInput.value.trim() || null;
 
         alert('Properties updated!');
     }
@@ -417,6 +434,41 @@ class IMDFBuilder {
         this.currentLevel = level;
         this.renderLevelsList();
         this.updateCanvasInfo(`Current Level: ${level.name}`);
+        this.showLevelProperties(level);
+    }
+
+    showLevelProperties(level) {
+        const panel = document.getElementById('propertiesPanel');
+        panel.innerHTML = `
+            <div class="property-field">
+                <label>Level Name:</label>
+                <input type="text" id="level-prop-name" value="${level.name || ''}" />
+            </div>
+            <div class="property-field">
+                <label>Level Number:</label>
+                <input type="number" id="level-prop-ordinal" value="${level.ordinal}" />
+            </div>
+            <div class="property-field">
+                <label>Microsoft Places ID (optional):</label>
+                <input type="text" id="level-prop-placeid" value="${level.placeId || ''}" placeholder="Floor PlaceId from Get-PlaceV3" />
+            </div>
+            <p class="hint">The floor's Places SortOrder must match the level number.</p>
+            <button id="updateLevelBtn" class="btn btn-primary" style="width: 100%; margin-top: 10px;">
+                Update Level
+            </button>
+        `;
+        document.getElementById('updateLevelBtn').addEventListener('click', () => {
+            level.name = document.getElementById('level-prop-name').value || level.name;
+            const ordinal = parseInt(document.getElementById('level-prop-ordinal').value);
+            if (!isNaN(ordinal)) {
+                level.ordinal = ordinal;
+                level.short_name = ordinal.toString();
+            }
+            level.placeId = document.getElementById('level-prop-placeid').value.trim() || null;
+            this.renderLevelsList();
+            this.updateCanvasInfo(`Current Level: ${level.name}`);
+            alert('Level updated!');
+        });
     }
 
     removeLevel(levelId) {
@@ -553,17 +605,25 @@ class IMDFBuilder {
         this.canvas.renderAll();
     }
 
-    async saveProject() {
+    // Single source of truth for the project payload used by save and export.
+    // Building/footprint ids are minted once and persisted so every export
+    // reuses them — a filled-in Places correlations CSV stays valid.
+    collectProjectData() {
         const projectName = document.getElementById('projectName').value || 'Untitled Project';
-        
-        const projectData = {
+        this.buildingId = this.buildingId || this.generateUUID();
+        this.footprintId = this.footprintId || this.generateUUID();
+
+        return {
             projectName: projectName,
             venue: {
                 name: projectName,
                 coordinates: this.parseCoordinates(document.getElementById('venueCoords').value)
             },
             building: {
+                id: this.buildingId,
+                footprintId: this.footprintId,
                 name: document.getElementById('buildingName').value || 'Building',
+                placeId: document.getElementById('buildingPlaceId').value.trim() || null,
                 coordinates: this.getBuildingCoordinates()
             },
             levels: this.levels.map(l => ({
@@ -571,6 +631,7 @@ class IMDFBuilder {
                 name: l.name,
                 ordinal: l.ordinal,
                 short_name: l.short_name,
+                placeId: l.placeId || null,
                 coordinates: this.getLevelCoordinates()
             })),
             units: this.units.map(u => ({
@@ -578,6 +639,7 @@ class IMDFBuilder {
                 name: u.name,
                 category: u.category,
                 restriction: u.restriction,
+                placeId: u.placeId || null,
                 levelId: u.levelId,
                 coordinates: this.getObjectCoordinates(u.fabricObject),
                 display_point: this.getDisplayPoint(u.fabricObject)
@@ -601,10 +663,15 @@ class IMDFBuilder {
                 category: o.category,
                 levelId: o.levelId,
                 coordinates: this.getLineCoordinates(o.fabricObject)
-            })),
-            floorplanImage: this.floorplanImage,
-            createdAt: new Date().toISOString()
+            }))
         };
+    }
+
+    async saveProject() {
+        const projectData = this.collectProjectData();
+        const projectName = projectData.projectName;
+        projectData.floorplanImage = this.floorplanImage;
+        projectData.createdAt = new Date().toISOString();
 
         try {
             const response = await fetch('/api/projects/save', {
@@ -685,6 +752,9 @@ class IMDFBuilder {
             
             if (data.building) {
                 document.getElementById('buildingName').value = data.building.name;
+                document.getElementById('buildingPlaceId').value = data.building.placeId || '';
+                this.buildingId = data.building.id || null;
+                this.footprintId = data.building.footprintId || null;
             }
 
             // Load floor plan if exists
@@ -758,9 +828,12 @@ class IMDFBuilder {
             this.currentLevel = null;
             this.projectId = null;
             this.floorplanImage = null;
-            
+            this.buildingId = null;
+            this.footprintId = null;
+
             document.getElementById('projectName').value = '';
             document.getElementById('buildingName').value = '';
+            document.getElementById('buildingPlaceId').value = '';
             document.getElementById('venueCoords').value = '0, 0';
             
             this.renderLevelsList();
@@ -770,57 +843,7 @@ class IMDFBuilder {
     }
 
     async exportIMDF() {
-        const projectName = document.getElementById('projectName').value || 'Untitled Project';
-        
-        const projectData = {
-            venue: {
-                id: this.generateUUID(),
-                name: projectName,
-                coordinates: this.parseCoordinates(document.getElementById('venueCoords').value)
-            },
-            building: {
-                id: this.generateUUID(),
-                name: document.getElementById('buildingName').value || 'Building',
-                coordinates: this.getBuildingCoordinates()
-            },
-            levels: this.levels.map(l => ({
-                id: l.id,
-                name: l.name,
-                ordinal: l.ordinal,
-                short_name: l.short_name,
-                coordinates: this.getLevelCoordinates()
-            })),
-            units: this.units.map(u => ({
-                id: u.id,
-                name: u.name,
-                category: u.category,
-                restriction: u.restriction,
-                levelId: u.levelId,
-                coordinates: this.getObjectCoordinates(u.fabricObject),
-                display_point: this.getDisplayPoint(u.fabricObject)
-            })),
-            amenities: this.amenities.map(a => ({
-                id: a.id,
-                name: a.name,
-                category: a.category,
-                levelId: a.levelId,
-                coordinates: this.getPointCoordinates(a.fabricObject)
-            })),
-            fixtures: this.fixtures.map(f => ({
-                id: f.id,
-                category: f.category,
-                levelId: f.levelId,
-                geometryType: 'LineString',
-                coordinates: this.getLineCoordinates(f.fabricObject)
-            })),
-            openings: this.openings.map(o => ({
-                id: o.id,
-                category: o.category,
-                levelId: o.levelId,
-                coordinates: this.getLineCoordinates(o.fabricObject)
-            })),
-            anchors: []
-        };
+        const projectData = this.collectProjectData();
 
         try {
             const response = await fetch('/api/generate-imdf', {
@@ -829,23 +852,39 @@ class IMDFBuilder {
                 body: JSON.stringify({ projectData })
             });
 
-            if (response.ok) {
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'imdf-export.zip';
-                document.body.appendChild(a);
-                a.click();
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(a);
-                alert('IMDF files exported successfully!');
-            } else {
-                alert('Export failed');
+            if (!response.ok) {
+                const result = await this.parseJsonResponse(response);
+                alert('Export failed: ' + (result.error || `HTTP ${response.status}`));
+                return;
             }
+            this.downloadBlob(await response.blob(), 'imdf-export.zip');
+
+            // Companion correlations CSV for Import-MapCorrelations, pre-filled
+            // with this export's feature ids and any Places IDs entered above.
+            const csvResponse = await fetch('/api/generate-mapfeatures', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ projectData })
+            });
+            if (csvResponse.ok) {
+                this.downloadBlob(await csvResponse.blob(), 'mapfeatures.csv');
+            }
+
+            alert('IMDF files exported successfully!');
         } catch (error) {
             alert('Export error: ' + error.message);
         }
+    }
+
+    downloadBlob(blob, filename) {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
     }
 
     // Helper methods
