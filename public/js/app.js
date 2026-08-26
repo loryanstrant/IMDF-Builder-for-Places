@@ -90,13 +90,14 @@ class IMDFBuilder {
             selection: true
         });
 
-        // Handle window resize
+        // Handle window resize — update canvas dimensions and refit the background image
         window.addEventListener('resize', () => {
             const container = canvasElement.parentElement;
             this.canvas.setDimensions({
                 width: container.clientWidth,
                 height: container.clientHeight
             });
+            this.refitBackground();
             this.canvas.renderAll();
         });
 
@@ -548,24 +549,11 @@ class IMDFBuilder {
             throw new Error('Failed to load floor plan image');
         }
 
-        // Scale image to fit canvas
-        const scale = Math.min(
-            this.canvas.width / img.width,
-            this.canvas.height / img.height
-        ) * 0.9;
-
-        img.scale(scale);
-        img.set({
-            left: this.canvas.width / 2,
-            top: this.canvas.height / 2,
-            originX: 'center',
-            originY: 'center',
-            selectable: false,
-            evented: false
-        });
+        img.set({ selectable: false, evented: false });
 
         // Fabric v6: backgroundImage is a property; setBackgroundImage() was removed.
         this.canvas.backgroundImage = img;
+        this.refitBackground();
         this.canvas.renderAll();
     }
 
@@ -582,6 +570,33 @@ class IMDFBuilder {
         tmpCanvas.height = viewport.height;
         await page.render({ canvasContext: tmpCanvas.getContext('2d'), viewport }).promise;
         return tmpCanvas.toDataURL('image/png');
+    }
+
+    // Re-scale and re-centre the background image to fill 90% of the current
+    // canvas size.  Called after every resize so the floor plan tracks the window.
+    refitBackground() {
+        const bg = this.canvas.backgroundImage;
+        if (!bg) return;
+
+        // Natural dimensions — for a Fabric Image use width/height; for an SVG
+        // Group use the original width/height stored on the object.
+        const naturalW = bg._originalElement ? bg._originalElement.naturalWidth || bg.width : bg.width;
+        const naturalH = bg._originalElement ? bg._originalElement.naturalHeight || bg.height : bg.height;
+        const srcW = naturalW || bg.width || 1;
+        const srcH = naturalH || bg.height || 1;
+
+        const scale = Math.min(
+            this.canvas.width  / srcW,
+            this.canvas.height / srcH
+        ) * 0.9;
+
+        bg.scale(scale);
+        bg.set({
+            left: this.canvas.width  / 2,
+            top:  this.canvas.height / 2,
+            originX: 'center',
+            originY: 'center'
+        });
     }
 
     async loadSvgToCanvas(svgUrl) {
@@ -602,22 +617,10 @@ class IMDFBuilder {
         });
 
         const group = fabric.util.groupSVGElements(objects, options);
-        const scale = Math.min(
-            this.canvas.width / (group.width || 1),
-            this.canvas.height / (group.height || 1)
-        ) * 0.9;
-
-        group.scale(scale);
-        group.set({
-            left: this.canvas.width / 2,
-            top: this.canvas.height / 2,
-            originX: 'center',
-            originY: 'center',
-            selectable: false,
-            evented: false
-        });
+        group.set({ selectable: false, evented: false });
 
         this.canvas.backgroundImage = group;
+        this.refitBackground();
         this.canvas.renderAll();
     }
 
