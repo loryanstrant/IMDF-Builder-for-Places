@@ -164,7 +164,7 @@ class IMDFBuilder {
     handleCanvasClick(event) {
         if (!event.pointer || this.currentTool === 'select') return;
         if (!this.currentLevel) {
-            alert('Please add and select a level first');
+            this.showToast('Please add and select a level first', 'error');
             return;
         }
 
@@ -199,9 +199,11 @@ class IMDFBuilder {
 
         const unit = {
             id: this.generateUUID(),
+            type: 'unit',
             name: `Unit ${this.units.length + 1}`,
             category: 'room',
             restriction: 'restricted',
+            exchangeId: '',
             levelId: this.currentLevel.id,
             fabricObject: rect
         };
@@ -224,6 +226,7 @@ class IMDFBuilder {
 
         const amenity = {
             id: this.generateUUID(),
+            type: 'amenity',
             name: `Amenity ${this.amenities.length + 1}`,
             category: 'seating',
             levelId: this.currentLevel.id,
@@ -244,6 +247,7 @@ class IMDFBuilder {
 
         const fixture = {
             id: this.generateUUID(),
+            type: 'fixture',
             category: 'wall',
             levelId: this.currentLevel.id,
             fabricObject: line
@@ -263,6 +267,7 @@ class IMDFBuilder {
 
         const opening = {
             id: this.generateUUID(),
+            type: 'opening',
             category: 'door',
             levelId: this.currentLevel.id,
             fabricObject: line
@@ -289,7 +294,25 @@ class IMDFBuilder {
 
     showProperties(data) {
         const panel = document.getElementById('propertiesPanel');
-        let html = '';
+
+        // Determine the item type label
+        const typeMap = {
+            unit: 'Unit / Room',
+            amenity: 'Amenity',
+            fixture: 'Fixture',
+            opening: 'Opening / Door'
+        };
+        const typeLabel = typeMap[data.type] || (data.levelId ? 'Item' : 'Unknown');
+
+        let html = `<span class="prop-type-badge">${typeLabel}</span>`;
+
+        // Read-only ID
+        html += `
+            <div class="property-field">
+                <label>ID:</label>
+                <input type="text" value="${data.id || ''}" readonly />
+            </div>
+        `;
 
         if (data.name !== undefined) {
             html += `
@@ -320,6 +343,17 @@ class IMDFBuilder {
             `;
         }
 
+        // Exchange ID field — only for units (which have a restriction property)
+        if (data.exchangeId !== undefined) {
+            html += `
+                <div class="property-field">
+                    <label>Exchange Room ID:</label>
+                    <input type="text" id="prop-exchangeId" value="${data.exchangeId || ''}"
+                           placeholder="e.g. room.building@contoso.com" />
+                </div>
+            `;
+        }
+
         html += `
             <button id="updatePropertiesBtn" class="btn btn-primary" style="width: 100%; margin-top: 10px;">
                 Update Properties
@@ -328,7 +362,11 @@ class IMDFBuilder {
 
         panel.innerHTML = html;
 
-        // Attach update handler
+        // Auto-apply on blur for text inputs
+        panel.querySelectorAll('input:not([readonly]), select').forEach(el => {
+            el.addEventListener('change', () => this.updateSelectedProperties(data));
+        });
+
         const updateBtn = document.getElementById('updatePropertiesBtn');
         if (updateBtn) {
             updateBtn.addEventListener('click', () => this.updateSelectedProperties(data));
@@ -341,13 +379,15 @@ class IMDFBuilder {
 
         if (nameInput) data.name = nameInput.value;
         if (categoryInput) data.category = categoryInput.value;
+        const exchangeInput = document.getElementById('prop-exchangeId');
+        if (exchangeInput !== null) data.exchangeId = exchangeInput.value;
 
-        alert('Properties updated!');
+        this.showToast('Properties updated', 'success');
     }
 
     deleteSelected() {
         if (!this.selectedObject) {
-            alert('No object selected');
+            this.showToast('No object selected', 'info');
             return;
         }
 
@@ -451,7 +491,7 @@ class IMDFBuilder {
         const file = fileInput.files[0];
         
         if (!file) {
-            alert('Please select a file first');
+            this.showToast('Please select a file first', 'error');
             return;
         }
 
@@ -469,12 +509,12 @@ class IMDFBuilder {
             if (response.ok && result.success) {
                 this.floorplanImage = result.path;
                 await this.loadFloorplanToCanvas(result.path);
-                alert('Floor plan uploaded successfully!');
+                this.showToast('Floor plan uploaded successfully!', 'success');
             } else {
-                alert('Upload failed: ' + (result.error || `HTTP ${response.status}`));
+                this.showToast('Upload failed: ' + (result.error || `HTTP ${response.status}`), 'error');
             }
         } catch (error) {
-            alert('Upload error: ' + error.message);
+            this.showToast('Upload error: ' + error.message, 'error');
         }
     }
 
@@ -493,6 +533,13 @@ class IMDFBuilder {
     async loadFloorplanToCanvas(imageUrl) {
         // A PDF can't be drawn as an <img>; rasterize its first page first (issue #4).
         const isPdf = /\.pdf($|\?)/i.test(imageUrl);
+        const isSvg = /\.svg($|\?)/i.test(imageUrl);
+
+        if (isSvg) {
+            await this.loadSvgToCanvas(imageUrl);
+            return;
+        }
+
         const sourceUrl = isPdf ? await this.renderPdfToDataUrl(imageUrl) : imageUrl;
 
         // Fabric v6 returns a Promise from fromURL (the old callback form is gone).
@@ -535,6 +582,43 @@ class IMDFBuilder {
         tmpCanvas.height = viewport.height;
         await page.render({ canvasContext: tmpCanvas.getContext('2d'), viewport }).promise;
         return tmpCanvas.toDataURL('image/png');
+    }
+
+    async loadSvgToCanvas(svgUrl) {
+        // Fabric v6 exposes loadSVGFromURL on the util namespace.
+        const loadFn = (fabric.util && fabric.util.loadSVGFromURL)
+            ? fabric.util.loadSVGFromURL
+            : fabric.loadSVGFromURL;
+
+        if (!loadFn) {
+            throw new Error('SVG loading not supported by this version of Fabric.js');
+        }
+
+        const { objects, options } = await new Promise((resolve, reject) => {
+            loadFn(svgUrl, (objects, options) => {
+                if (!objects) reject(new Error('Failed to parse SVG'));
+                else resolve({ objects, options });
+            });
+        });
+
+        const group = fabric.util.groupSVGElements(objects, options);
+        const scale = Math.min(
+            this.canvas.width / (group.width || 1),
+            this.canvas.height / (group.height || 1)
+        ) * 0.9;
+
+        group.scale(scale);
+        group.set({
+            left: this.canvas.width / 2,
+            top: this.canvas.height / 2,
+            originX: 'center',
+            originY: 'center',
+            selectable: false,
+            evented: false
+        });
+
+        this.canvas.backgroundImage = group;
+        this.canvas.renderAll();
     }
 
     zoomIn() {
@@ -621,12 +705,12 @@ class IMDFBuilder {
             
             if (result.success) {
                 this.projectId = result.projectId;
-                alert('Project saved successfully!');
+                this.showToast('Project saved successfully!', 'success');
             } else {
-                alert('Save failed: ' + result.error);
+                this.showToast('Save failed: ' + result.error, 'error');
             }
         } catch (error) {
-            alert('Save error: ' + error.message);
+            this.showToast('Save error: ' + error.message, 'error');
         }
     }
 
@@ -655,7 +739,7 @@ class IMDFBuilder {
 
             document.getElementById('loadProjectModal').style.display = 'block';
         } catch (error) {
-            alert('Error loading projects: ' + error.message);
+            this.showToast('Error loading projects: ' + error.message, 'error');
         }
     }
 
@@ -741,9 +825,9 @@ class IMDFBuilder {
 
             this.updateCounts();
             document.getElementById('loadProjectModal').style.display = 'none';
-            alert('Project loaded successfully!');
+            this.showToast('Project loaded successfully!', 'success');
         } catch (error) {
-            alert('Error loading project: ' + error.message);
+            this.showToast('Error loading project: ' + error.message, 'error');
         }
     }
 
@@ -766,6 +850,7 @@ class IMDFBuilder {
             this.renderLevelsList();
             this.updateCounts();
             this.clearSelection();
+            this.showToast('New project started', 'info');
         }
     }
 
@@ -795,6 +880,7 @@ class IMDFBuilder {
                 name: u.name,
                 category: u.category,
                 restriction: u.restriction,
+                exchangeId: u.exchangeId || '',
                 levelId: u.levelId,
                 coordinates: this.getObjectCoordinates(u.fabricObject),
                 display_point: this.getDisplayPoint(u.fabricObject)
@@ -839,17 +925,35 @@ class IMDFBuilder {
                 a.click();
                 window.URL.revokeObjectURL(url);
                 document.body.removeChild(a);
-                alert('IMDF files exported successfully!');
+                this.showToast('IMDF files exported successfully!', 'success');
             } else {
-                alert('Export failed');
+                this.showToast('Export failed', 'error');
             }
         } catch (error) {
-            alert('Export error: ' + error.message);
+            this.showToast('Export error: ' + error.message, 'error');
         }
     }
 
-    // Helper methods
-    generateUUID() {
+    // ── Toast notification helper ────────────────────────────────
+    showToast(message, type = 'info') {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+
+        const icons = { success: '✓', error: '✕', info: 'ℹ' };
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span><span>${message}</span>`;
+        container.appendChild(toast);
+
+        const dismiss = () => {
+            toast.classList.add('removing');
+            toast.addEventListener('animationend', () => toast.remove(), { once: true });
+        };
+        setTimeout(dismiss, 4000);
+        toast.addEventListener('click', dismiss);
+    }
+
+    // ── UUID generator ───────────────────────────────────────────
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
             const r = Math.random() * 16 | 0;
             const v = c === 'x' ? r : (r & 0x3 | 0x8);
