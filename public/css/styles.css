@@ -553,6 +553,58 @@ header h1 {
     cursor: default;
 }
 
+/* ── Snap control ────────────────────────────────────────── */
+.snap-control {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-faint);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.snap-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    user-select: none;
+}
+
+.snap-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+/* ── Drawing hint bar ────────────────────────────────────── */
+.drawing-hint {
+    background: var(--accent);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+/* ── Polygon vertex preview dot ──────────────────────────── */
+.snap-cursor {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ff5c00;
+    border: 2px solid #fff;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+    z-index: 100;
+    display: none;
+}
+
 /* ── Responsive layout ───────────────────────────────────── */
 
 /* Medium screens — shrink sidebars, keep layout intact */

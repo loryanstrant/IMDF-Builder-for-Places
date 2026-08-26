@@ -13,6 +13,18 @@ class IMDFBuilder {
         this.selectedObject = null;
         this.projectId = null;
         this.floorplanImage = null;
+
+        // Polygon drawing state
+        this.polyPoints = [];       // vertices collected so far
+        this.polyLines = [];        // preview line objects on canvas
+        this.polyDots = [];         // vertex dot objects on canvas
+        this.previewLine = null;    // rubber-band line tracking mouse
+
+        // Edge-snapping state
+        this.snapEnabled = true;
+        this.snapRadius = 12;       // pixels (canvas coords)
+        this.snapCanvas = null;     // offscreen canvas for pixel sampling
+        this.snapCtx = null;
         
         this.init();
     }
@@ -98,6 +110,7 @@ class IMDFBuilder {
                 height: container.clientHeight
             });
             this.refitBackground();
+            this.buildSnapCanvas();
             this.canvas.renderAll();
         });
 
@@ -106,6 +119,13 @@ class IMDFBuilder {
         this.canvas.on('selection:updated', (e) => this.handleSelection(e));
         this.canvas.on('selection:cleared', () => this.clearSelection());
         this.canvas.on('mouse:down', (e) => this.handleCanvasClick(e));
+        this.canvas.on('mouse:move', (e) => this.handleCanvasMove(e));
+        this.canvas.on('mouse:dblclick', (e) => this.handleCanvasDblClick(e));
+
+        // Escape cancels an in-progress polygon
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') this.cancelPolygon();
+        });
     }
 
     attachEventListeners() {
@@ -123,7 +143,7 @@ class IMDFBuilder {
         // Tool selection
         document.querySelectorAll('.btn-tool').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const tool = e.target.dataset.tool;
+                const tool = e.currentTarget.dataset.tool;
                 this.setTool(tool);
             });
         });
@@ -139,6 +159,15 @@ class IMDFBuilder {
         // Export
         document.getElementById('exportBtn').addEventListener('click', () => this.exportIMDF());
 
+        // Snap toggle
+        const snapToggle = document.getElementById('snapToggle');
+        if (snapToggle) {
+            snapToggle.addEventListener('change', (e) => {
+                this.snapEnabled = e.target.checked;
+                this.showToast(`Edge snapping ${this.snapEnabled ? 'on' : 'off'}`, 'info');
+            });
+        }
+
         // Modal close
         document.querySelector('.close').addEventListener('click', () => {
             document.getElementById('loadProjectModal').style.display = 'none';
@@ -146,6 +175,9 @@ class IMDFBuilder {
     }
 
     setTool(tool) {
+        // Cancel any in-progress polygon draw when switching tools
+        if (this.polyPoints.length > 0) this.cancelPolygon();
+
         this.currentTool = tool;
         document.querySelectorAll('.btn-tool').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tool === tool);
@@ -154,12 +186,28 @@ class IMDFBuilder {
         if (tool === 'select') {
             this.canvas.selection = true;
             this.canvas.isDrawingMode = false;
+            this.hideDrawingHint();
         } else {
             this.canvas.selection = false;
             this.canvas.isDrawingMode = false;
+            if (tool === 'unit') {
+                this.showDrawingHint('Click to place vertices — double-click or click near start to close the polygon. Esc to cancel.');
+            } else {
+                this.hideDrawingHint();
+            }
         }
         
         this.updateCanvasInfo(`Tool: ${tool}`);
+    }
+
+    showDrawingHint(msg) {
+        const el = document.getElementById('drawingHint');
+        if (el) { el.textContent = msg; el.style.display = 'block'; }
+    }
+
+    hideDrawingHint() {
+        const el = document.getElementById('drawingHint');
+        if (el) el.style.display = 'none';
     }
 
     handleCanvasClick(event) {
@@ -169,11 +217,15 @@ class IMDFBuilder {
             return;
         }
 
-        const pointer = this.canvas.getPointer(event.e);
-        
+        const raw = this.canvas.getPointer(event.e);
+        const pointer = this.snapEnabled ? this.snapToEdge(raw) : raw;
+
         switch (this.currentTool) {
             case 'unit':
-                this.placeUnit(pointer);
+                this.handlePolygonClick(pointer);
+                break;
+            case 'unit-rect':
+                this.placeRectUnit(pointer);
                 break;
             case 'amenity':
                 this.placeAmenity(pointer);
@@ -187,7 +239,265 @@ class IMDFBuilder {
         }
     }
 
-    placeUnit(pointer) {
+    handleCanvasMove(event) {
+        const raw = this.canvas.getPointer(event.e);
+        const pos = this.snapEnabled ? this.snapToEdge(raw) : raw;
+
+        // Show snap cursor dot
+        this.updateSnapCursor(pos, raw !== pos || this.polyPoints.length > 0);
+
+        // Update rubber-band preview line while drawing polygon
+        if (this.currentTool === 'unit' && this.polyPoints.length > 0) {
+            const last = this.polyPoints[this.polyPoints.length - 1];
+            if (this.previewLine) {
+                this.previewLine.set({ x1: last.x, y1: last.y, x2: pos.x, y2: pos.y });
+            } else {
+                this.previewLine = new fabric.Line([last.x, last.y, pos.x, pos.y], {
+                    stroke: '#ff5c00',
+                    strokeWidth: 1.5,
+                    strokeDashArray: [4, 4],
+                    selectable: false,
+                    evented: false,
+                    excludeFromExport: true
+                });
+                this.canvas.add(this.previewLine);
+            }
+            this.canvas.renderAll();
+        }
+    }
+
+    handleCanvasDblClick(event) {
+        if (this.currentTool === 'unit' && this.polyPoints.length >= 3) {
+            this.closePolygon();
+        }
+    }
+
+    updateSnapCursor(snapped, show) {
+        const el = document.getElementById('snapCursor');
+        if (!el) return;
+        if (!show) { el.style.display = 'none'; return; }
+        // Convert canvas coords back to DOM coords
+        const vpt = this.canvas.viewportTransform;
+        const x = snapped.x * vpt[0] + vpt[4];
+        const y = snapped.y * vpt[3] + vpt[5];
+        el.style.left = x + 'px';
+        el.style.top  = y + 'px';
+        el.style.display = 'block';
+    }
+
+    // ── Polygon drawing ───────────────────────────────────────────
+
+    handlePolygonClick(pointer) {
+        const CLOSE_RADIUS = 14; // px — click near first vertex to close
+
+        // Check if clicking near the first vertex to close the polygon
+        if (this.polyPoints.length >= 3) {
+            const first = this.polyPoints[0];
+            const dx = pointer.x - first.x;
+            const dy = pointer.y - first.y;
+            if (Math.sqrt(dx*dx + dy*dy) < CLOSE_RADIUS) {
+                this.closePolygon();
+                return;
+            }
+        }
+
+        // Add the vertex
+        this.polyPoints.push({ x: pointer.x, y: pointer.y });
+
+        // Draw a vertex dot
+        const dot = new fabric.Circle({
+            left: pointer.x,
+            top: pointer.y,
+            radius: 4,
+            fill: this.polyPoints.length === 1 ? '#28a745' : '#ff5c00',
+            stroke: '#fff',
+            strokeWidth: 1.5,
+            originX: 'center',
+            originY: 'center',
+            selectable: false,
+            evented: false,
+            excludeFromExport: true
+        });
+        this.canvas.add(dot);
+        this.polyDots.push(dot);
+
+        // Draw an edge from the previous vertex
+        if (this.polyPoints.length > 1) {
+            const prev = this.polyPoints[this.polyPoints.length - 2];
+            const line = new fabric.Line([prev.x, prev.y, pointer.x, pointer.y], {
+                stroke: '#ff5c00',
+                strokeWidth: 1.5,
+                selectable: false,
+                evented: false,
+                excludeFromExport: true
+            });
+            this.canvas.add(line);
+            this.polyLines.push(line);
+        }
+
+        // Remove preview line so it gets recreated from the new last point
+        if (this.previewLine) {
+            this.canvas.remove(this.previewLine);
+            this.previewLine = null;
+        }
+
+        const n = this.polyPoints.length;
+        this.showDrawingHint(
+            n === 1
+                ? 'First vertex placed — keep clicking to add more. Double-click or click ● to close.'
+                : `${n} vertices — double-click or click the green dot to close the polygon. Esc to cancel.`
+        );
+        this.canvas.renderAll();
+    }
+
+    closePolygon() {
+        if (this.polyPoints.length < 3) return;
+
+        // Clean up preview geometry
+        this.cancelPolygonPreview();
+
+        // Build Fabric polygon from the collected points
+        const points = this.polyPoints.map(p => ({ x: p.x, y: p.y }));
+        const poly = new fabric.Polygon(points, {
+            fill: 'rgba(0, 120, 212, 0.3)',
+            stroke: '#0078d4',
+            strokeWidth: 2,
+            selectable: true,
+            evented: true,
+            objectCaching: false
+        });
+
+        const unit = {
+            id: this.generateUUID(),
+            type: 'unit',
+            name: `Unit ${this.units.length + 1}`,
+            category: 'room',
+            restriction: 'restricted',
+            exchangeId: '',
+            levelId: this.currentLevel.id,
+            fabricObject: poly
+        };
+
+        poly.imdfData = unit;
+        this.units.push(unit);
+        this.canvas.add(poly);
+        this.canvas.setActiveObject(poly);
+        this.updateCounts();
+        this.polyPoints = [];
+        this.showDrawingHint('Click to place vertices — double-click or click near start to close the polygon. Esc to cancel.');
+        this.canvas.renderAll();
+    }
+
+    cancelPolygon() {
+        if (this.polyPoints.length === 0) return;
+        this.cancelPolygonPreview();
+        this.polyPoints = [];
+    }
+
+    cancelPolygonPreview() {
+        // Remove all temporary preview objects from canvas
+        [...this.polyLines, ...this.polyDots].forEach(o => this.canvas.remove(o));
+        if (this.previewLine) this.canvas.remove(this.previewLine);
+        this.polyLines = [];
+        this.polyDots = [];
+        this.previewLine = null;
+        this.canvas.renderAll();
+    }
+
+    // ── Edge snapping ─────────────────────────────────────────────
+
+    // Build the offscreen sampling canvas whenever a new floor plan is loaded.
+    // We draw the background image into an offscreen <canvas> at its natural
+    // resolution so we can read pixel values without CORS issues (the image was
+    // uploaded by the user and served from our own origin).
+    buildSnapCanvas() {
+        const bg = this.canvas.backgroundImage;
+        if (!bg) { this.snapCanvas = null; this.snapCtx = null; return; }
+
+        try {
+            const el = bg._originalElement || bg.getElement && bg.getElement();
+            if (!el) { this.snapCanvas = null; return; }
+
+            const w = el.naturalWidth  || el.width  || 800;
+            const h = el.naturalHeight || el.height || 600;
+
+            this.snapCanvas = document.createElement('canvas');
+            this.snapCanvas.width  = w;
+            this.snapCanvas.height = h;
+            this.snapCtx = this.snapCanvas.getContext('2d');
+            this.snapCtx.drawImage(el, 0, 0, w, h);
+        } catch (e) {
+            // Cross-origin or tainted canvas — silently disable snapping
+            this.snapCanvas = null;
+            this.snapCtx = null;
+        }
+    }
+
+    // Map a canvas-coordinate point to the nearest dark edge pixel within
+    // snapRadius.  Returns the original point if no edge is found.
+    snapToEdge(pt) {
+        if (!this.snapEnabled || !this.snapCtx || !this.canvas.backgroundImage) return pt;
+
+        const bg = this.canvas.backgroundImage;
+        // Background image transform: position and scale
+        const bgScaleX = bg.scaleX || 1;
+        const bgScaleY = bg.scaleY || 1;
+        const bgLeft   = bg.left   || 0;
+        const bgTop    = bg.top    || 0;
+        const bgW = (bg._originalElement ? (bg._originalElement.naturalWidth  || bg.width) : bg.width)  || 1;
+        const bgH = (bg._originalElement ? (bg._originalElement.naturalHeight || bg.height) : bg.height) || 1;
+        const bgOriginX = bgLeft - (bgW * bgScaleX) / 2;
+        const bgOriginY = bgTop  - (bgH * bgScaleY) / 2;
+
+        // Convert canvas coords → image pixel coords
+        const imgX = (pt.x - bgOriginX) / bgScaleX;
+        const imgY = (pt.y - bgOriginY) / bgScaleY;
+
+        // Scale snap radius from canvas coords to image coords
+        const imgRadius = this.snapRadius / Math.min(bgScaleX, bgScaleY);
+
+        let bestX = pt.x, bestY = pt.y;
+        let bestEdge = 0;
+        let found = false;
+
+        const r = Math.ceil(imgRadius);
+        const cx = Math.round(imgX), cy = Math.round(imgY);
+        const x0 = Math.max(0, cx - r), x1 = Math.min(this.snapCanvas.width  - 1, cx + r);
+        const y0 = Math.max(0, cy - r), y1 = Math.min(this.snapCanvas.height - 1, cy + r);
+
+        if (x0 >= x1 || y0 >= y1) return pt;
+
+        const imgData = this.snapCtx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        const data = imgData.data;
+        const stride = (x1 - x0 + 1) * 4;
+
+        for (let dy = 0; dy <= y1 - y0; dy++) {
+            for (let dx = 0; dx <= x1 - x0; dx++) {
+                const px = x0 + dx, py = y0 + dy;
+                const distSq = (px - imgX) ** 2 + (py - imgY) ** 2;
+                if (distSq > imgRadius * imgRadius) continue;
+
+                const idx = dy * stride + dx * 4;
+                const r_val = data[idx], g_val = data[idx+1], b_val = data[idx+2];
+                const brightness = (r_val + g_val + b_val) / 3;
+                // Lower brightness = darker = more likely an edge/wall
+                const edgeScore = (255 - brightness) / 255;
+
+                if (edgeScore > 0.4 && edgeScore > bestEdge) {
+                    bestEdge = edgeScore;
+                    // Convert back to canvas coords
+                    bestX = bgOriginX + px * bgScaleX;
+                    bestY = bgOriginY + py * bgScaleY;
+                    found = true;
+                }
+            }
+        }
+
+        return found ? { x: bestX, y: bestY } : pt;
+    }
+
+    // ── Rectangle unit (legacy quick-place) ──────────────────────
+    placeRectUnit(pointer) {
         const rect = new fabric.Rect({
             left: pointer.x,
             top: pointer.y,
@@ -554,6 +864,7 @@ class IMDFBuilder {
         // Fabric v6: backgroundImage is a property; setBackgroundImage() was removed.
         this.canvas.backgroundImage = img;
         this.refitBackground();
+        this.buildSnapCanvas();
         this.canvas.renderAll();
     }
 
@@ -621,6 +932,7 @@ class IMDFBuilder {
 
         this.canvas.backgroundImage = group;
         this.refitBackground();
+        this.buildSnapCanvas();
         this.canvas.renderAll();
     }
 
@@ -981,13 +1293,24 @@ class IMDFBuilder {
     }
 
     getObjectCoordinates(obj) {
-        // Convert fabric object to polygon coordinates
         if (!obj) return [[[0, 0], [0, 0.0001], [0.0001, 0.0001], [0.0001, 0], [0, 0]]];
-        
-        const left = obj.left / 100000;
-        const top = obj.top / 100000;
-        const width = (obj.width * obj.scaleX) / 100000;
-        const height = (obj.height * obj.scaleY) / 100000;
+
+        // Fabric Polygon — export its actual vertices
+        if (obj.type === 'polygon' && obj.points) {
+            const coords = obj.points.map(p => [
+                (obj.left + p.x - (obj.pathOffset ? obj.pathOffset.x : 0)) / 100000,
+                (obj.top  + p.y - (obj.pathOffset ? obj.pathOffset.y : 0)) / 100000
+            ]);
+            // Close the ring
+            if (coords.length > 0) coords.push(coords[0]);
+            return [coords];
+        }
+
+        // Fabric Rect (legacy rectangle units)
+        const left   = obj.left / 100000;
+        const top    = obj.top  / 100000;
+        const width  = (obj.width  * (obj.scaleX || 1)) / 100000;
+        const height = (obj.height * (obj.scaleY || 1)) / 100000;
         
         return [[
             [left, top],
