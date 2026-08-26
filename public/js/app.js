@@ -20,6 +20,9 @@ class IMDFBuilder {
         this.polyDots = [];         // vertex dot objects on canvas
         this.previewLine = null;    // rubber-band line tracking mouse
 
+        // Polygon vertex editing
+        this.vertexHandles = null;  // array of handle circles for selected polygon
+
         // Edge-snapping state
         this.snapEnabled = true;
         this.snapRadius = 12;       // pixels (canvas coords)
@@ -126,6 +129,14 @@ class IMDFBuilder {
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') this.cancelPolygon();
         });
+
+        // When a polygon vertex handle moves, update the polygon points
+        this.canvas.on('object:moving', (e) => {
+            const obj = e.target;
+            if (obj && obj._vertexHandle) {
+                this.updatePolygonVertex(obj);
+            }
+        });
     }
 
     attachEventListeners() {
@@ -212,6 +223,8 @@ class IMDFBuilder {
 
     handleCanvasClick(event) {
         if (!event.pointer || this.currentTool === 'select') return;
+        // Ignore clicks on vertex handles
+        if (event.target && event.target._vertexHandle) return;
         if (!this.currentLevel) {
             this.showToast('Please add and select a level first', 'error');
             return;
@@ -596,10 +609,17 @@ class IMDFBuilder {
             this.selectedObject = obj;
             this.showProperties(obj.imdfData);
         }
+        // Show vertex handles when a polygon is selected in select mode
+        if (obj && obj.type === 'polygon' && this.currentTool === 'select') {
+            this.showVertexHandles(obj);
+        } else {
+            this.removeVertexHandles();
+        }
     }
 
     clearSelection() {
         this.selectedObject = null;
+        this.removeVertexHandles();
         document.getElementById('propertiesPanel').innerHTML = '<p class="hint">Select an item to edit its properties</p>';
     }
 
@@ -616,6 +636,11 @@ class IMDFBuilder {
         const typeLabel = typeMap[data.type] || (data.levelId ? 'Item' : 'Unknown');
 
         let html = `<span class="prop-type-badge">${typeLabel}</span>`;
+
+        // Vertex-edit tip for polygons
+        if (data.type === 'unit' && this.selectedObject && this.selectedObject.type === 'polygon') {
+            html += `<p class="hint" style="margin-bottom:8px">🔴 Drag the orange dots to reshape the room.</p>`;
+        }
 
         // Read-only ID
         html += `
@@ -704,6 +729,9 @@ class IMDFBuilder {
 
         const data = this.selectedObject.imdfData;
         
+        // Remove vertex handles before deleting
+        this.removeVertexHandles();
+
         // Remove from canvas
         this.canvas.remove(this.selectedObject);
 
@@ -1247,6 +1275,95 @@ class IMDFBuilder {
         } catch (error) {
             this.showToast('Export error: ' + error.message, 'error');
         }
+    }
+
+    // ── Polygon vertex editing ────────────────────────────────────
+
+    showVertexHandles(polygon) {
+        this.removeVertexHandles();
+
+        // Disable the polygon's own transform controls while editing vertices
+        polygon.set({
+            hasControls: false,
+            hasBorders: false,
+            lockMovementX: true,
+            lockMovementY: true
+        });
+        this.canvas.renderAll();
+
+        const points = polygon.points;
+        if (!points) return;
+
+        // pathOffset is the polygon's internal origin used by Fabric
+        const ox = polygon.pathOffset ? polygon.pathOffset.x : 0;
+        const oy = polygon.pathOffset ? polygon.pathOffset.y : 0;
+
+        this.vertexHandles = points.map((pt, i) => {
+            const handle = new fabric.Circle({
+                left:    polygon.left + pt.x - ox,
+                top:     polygon.top  + pt.y - oy,
+                radius: 6,
+                fill: '#ff5c00',
+                stroke: '#ffffff',
+                strokeWidth: 2,
+                originX: 'center',
+                originY: 'center',
+                hasControls: false,
+                hasBorders: false,
+                selectable: true,
+                evented: true,
+                _vertexHandle: true,
+                _polygon: polygon,
+                _vertexIndex: i
+            });
+            this.canvas.add(handle);
+            return handle;
+        });
+
+        this.canvas.renderAll();
+    }
+
+    removeVertexHandles() {
+        if (!this.vertexHandles) return;
+        this.vertexHandles.forEach(h => this.canvas.remove(h));
+        this.vertexHandles = null;
+
+        // Re-enable transform controls on the previously-edited polygon
+        if (this.selectedObject && this.selectedObject.type === 'polygon') {
+            this.selectedObject.set({
+                hasControls: true,
+                hasBorders: true,
+                lockMovementX: false,
+                lockMovementY: false
+            });
+            this.canvas.renderAll();
+        }
+    }
+
+    updatePolygonVertex(handle) {
+        const polygon = handle._polygon;
+        const i = handle._vertexIndex;
+        if (!polygon || i === undefined) return;
+
+        const ox = polygon.pathOffset ? polygon.pathOffset.x : 0;
+        const oy = polygon.pathOffset ? polygon.pathOffset.y : 0;
+
+        // Snap to edge if enabled
+        const raw = { x: handle.left, y: handle.top };
+        const snapped = this.snapEnabled ? this.snapToEdge(raw) : raw;
+
+        // Move handle to snapped position
+        handle.set({ left: snapped.x, top: snapped.y });
+
+        // Update the polygon's point — coords are relative to polygon.left/top minus pathOffset
+        polygon.points[i] = {
+            x: snapped.x - polygon.left + ox,
+            y: snapped.y - polygon.top  + oy
+        };
+
+        // Force Fabric to recompute the polygon geometry
+        polygon.set({ dirty: true });
+        this.canvas.renderAll();
     }
 
     // ── Toast notification helper ────────────────────────────────
