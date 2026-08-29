@@ -13,6 +13,21 @@ class IMDFBuilder {
         this.selectedObject = null;
         this.projectId = null;
         this.floorplanImage = null;
+
+        // Polygon drawing state
+        this.polyPoints = [];       // vertices collected so far
+        this.polyLines = [];        // preview line objects on canvas
+        this.polyDots = [];         // vertex dot objects on canvas
+        this.previewLine = null;    // rubber-band line tracking mouse
+
+        // Polygon vertex editing
+        this.vertexHandles = null;  // array of handle circles for selected polygon
+
+        // Edge-snapping state
+        this.snapEnabled = true;
+        this.snapRadius = 12;       // pixels (canvas coords)
+        this.snapCanvas = null;     // offscreen canvas for pixel sampling
+        this.snapCtx = null;
         
         this.init();
     }
@@ -90,13 +105,15 @@ class IMDFBuilder {
             selection: true
         });
 
-        // Handle window resize
+        // Handle window resize — update canvas dimensions and refit the background image
         window.addEventListener('resize', () => {
             const container = canvasElement.parentElement;
             this.canvas.setDimensions({
                 width: container.clientWidth,
                 height: container.clientHeight
             });
+            this.refitBackground();
+            this.buildSnapCanvas();
             this.canvas.renderAll();
         });
 
@@ -105,6 +122,21 @@ class IMDFBuilder {
         this.canvas.on('selection:updated', (e) => this.handleSelection(e));
         this.canvas.on('selection:cleared', () => this.clearSelection());
         this.canvas.on('mouse:down', (e) => this.handleCanvasClick(e));
+        this.canvas.on('mouse:move', (e) => this.handleCanvasMove(e));
+        this.canvas.on('mouse:dblclick', (e) => this.handleCanvasDblClick(e));
+
+        // Escape cancels an in-progress polygon
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') this.cancelPolygon();
+        });
+
+        // When a polygon vertex handle moves, update the polygon points
+        this.canvas.on('object:moving', (e) => {
+            const obj = e.target;
+            if (obj && obj._vertexHandle) {
+                this.updatePolygonVertex(obj);
+            }
+        });
     }
 
     attachEventListeners() {
@@ -122,7 +154,7 @@ class IMDFBuilder {
         // Tool selection
         document.querySelectorAll('.btn-tool').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const tool = e.target.dataset.tool;
+                const tool = e.currentTarget.dataset.tool;
                 this.setTool(tool);
             });
         });
@@ -138,6 +170,15 @@ class IMDFBuilder {
         // Export
         document.getElementById('exportBtn').addEventListener('click', () => this.exportIMDF());
 
+        // Snap toggle
+        const snapToggle = document.getElementById('snapToggle');
+        if (snapToggle) {
+            snapToggle.addEventListener('change', (e) => {
+                this.snapEnabled = e.target.checked;
+                this.showToast(`Edge snapping ${this.snapEnabled ? 'on' : 'off'}`, 'info');
+            });
+        }
+
         // Modal close
         document.querySelector('.close').addEventListener('click', () => {
             document.getElementById('loadProjectModal').style.display = 'none';
@@ -145,6 +186,9 @@ class IMDFBuilder {
     }
 
     setTool(tool) {
+        // Cancel any in-progress polygon draw when switching tools
+        if (this.polyPoints.length > 0) this.cancelPolygon();
+
         this.currentTool = tool;
         document.querySelectorAll('.btn-tool').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tool === tool);
@@ -153,26 +197,48 @@ class IMDFBuilder {
         if (tool === 'select') {
             this.canvas.selection = true;
             this.canvas.isDrawingMode = false;
+            this.hideDrawingHint();
         } else {
             this.canvas.selection = false;
             this.canvas.isDrawingMode = false;
+            if (tool === 'unit') {
+                this.showDrawingHint('Click to place vertices — double-click or click near start to close the polygon. Esc to cancel.');
+            } else {
+                this.hideDrawingHint();
+            }
         }
         
         this.updateCanvasInfo(`Tool: ${tool}`);
     }
 
+    showDrawingHint(msg) {
+        const el = document.getElementById('drawingHint');
+        if (el) { el.textContent = msg; el.style.display = 'block'; }
+    }
+
+    hideDrawingHint() {
+        const el = document.getElementById('drawingHint');
+        if (el) el.style.display = 'none';
+    }
+
     handleCanvasClick(event) {
         if (!event.pointer || this.currentTool === 'select') return;
+        // Ignore clicks on vertex handles
+        if (event.target && event.target._vertexHandle) return;
         if (!this.currentLevel) {
-            alert('Please add and select a level first');
+            this.showToast('Please add and select a level first', 'error');
             return;
         }
 
-        const pointer = this.canvas.getPointer(event.e);
-        
+        const raw = this.canvas.getPointer(event.e);
+        const pointer = this.snapEnabled ? this.snapToEdge(raw) : raw;
+
         switch (this.currentTool) {
             case 'unit':
-                this.placeUnit(pointer);
+                this.handlePolygonClick(pointer);
+                break;
+            case 'unit-rect':
+                this.placeRectUnit(pointer);
                 break;
             case 'amenity':
                 this.placeAmenity(pointer);
@@ -186,7 +252,265 @@ class IMDFBuilder {
         }
     }
 
-    placeUnit(pointer) {
+    handleCanvasMove(event) {
+        const raw = this.canvas.getPointer(event.e);
+        const pos = this.snapEnabled ? this.snapToEdge(raw) : raw;
+
+        // Show snap cursor dot
+        this.updateSnapCursor(pos, raw !== pos || this.polyPoints.length > 0);
+
+        // Update rubber-band preview line while drawing polygon
+        if (this.currentTool === 'unit' && this.polyPoints.length > 0) {
+            const last = this.polyPoints[this.polyPoints.length - 1];
+            if (this.previewLine) {
+                this.previewLine.set({ x1: last.x, y1: last.y, x2: pos.x, y2: pos.y });
+            } else {
+                this.previewLine = new fabric.Line([last.x, last.y, pos.x, pos.y], {
+                    stroke: '#ff5c00',
+                    strokeWidth: 1.5,
+                    strokeDashArray: [4, 4],
+                    selectable: false,
+                    evented: false,
+                    excludeFromExport: true
+                });
+                this.canvas.add(this.previewLine);
+            }
+            this.canvas.renderAll();
+        }
+    }
+
+    handleCanvasDblClick(event) {
+        if (this.currentTool === 'unit' && this.polyPoints.length >= 3) {
+            this.closePolygon();
+        }
+    }
+
+    updateSnapCursor(snapped, show) {
+        const el = document.getElementById('snapCursor');
+        if (!el) return;
+        if (!show) { el.style.display = 'none'; return; }
+        // Convert canvas coords back to DOM coords
+        const vpt = this.canvas.viewportTransform;
+        const x = snapped.x * vpt[0] + vpt[4];
+        const y = snapped.y * vpt[3] + vpt[5];
+        el.style.left = x + 'px';
+        el.style.top  = y + 'px';
+        el.style.display = 'block';
+    }
+
+    // ── Polygon drawing ───────────────────────────────────────────
+
+    handlePolygonClick(pointer) {
+        const CLOSE_RADIUS = 14; // px — click near first vertex to close
+
+        // Check if clicking near the first vertex to close the polygon
+        if (this.polyPoints.length >= 3) {
+            const first = this.polyPoints[0];
+            const dx = pointer.x - first.x;
+            const dy = pointer.y - first.y;
+            if (Math.sqrt(dx*dx + dy*dy) < CLOSE_RADIUS) {
+                this.closePolygon();
+                return;
+            }
+        }
+
+        // Add the vertex
+        this.polyPoints.push({ x: pointer.x, y: pointer.y });
+
+        // Draw a vertex dot
+        const dot = new fabric.Circle({
+            left: pointer.x,
+            top: pointer.y,
+            radius: 4,
+            fill: this.polyPoints.length === 1 ? '#28a745' : '#ff5c00',
+            stroke: '#fff',
+            strokeWidth: 1.5,
+            originX: 'center',
+            originY: 'center',
+            selectable: false,
+            evented: false,
+            excludeFromExport: true
+        });
+        this.canvas.add(dot);
+        this.polyDots.push(dot);
+
+        // Draw an edge from the previous vertex
+        if (this.polyPoints.length > 1) {
+            const prev = this.polyPoints[this.polyPoints.length - 2];
+            const line = new fabric.Line([prev.x, prev.y, pointer.x, pointer.y], {
+                stroke: '#ff5c00',
+                strokeWidth: 1.5,
+                selectable: false,
+                evented: false,
+                excludeFromExport: true
+            });
+            this.canvas.add(line);
+            this.polyLines.push(line);
+        }
+
+        // Remove preview line so it gets recreated from the new last point
+        if (this.previewLine) {
+            this.canvas.remove(this.previewLine);
+            this.previewLine = null;
+        }
+
+        const n = this.polyPoints.length;
+        this.showDrawingHint(
+            n === 1
+                ? 'First vertex placed — keep clicking to add more. Double-click or click ● to close.'
+                : `${n} vertices — double-click or click the green dot to close the polygon. Esc to cancel.`
+        );
+        this.canvas.renderAll();
+    }
+
+    closePolygon() {
+        if (this.polyPoints.length < 3) return;
+
+        // Clean up preview geometry
+        this.cancelPolygonPreview();
+
+        // Build Fabric polygon from the collected points
+        const points = this.polyPoints.map(p => ({ x: p.x, y: p.y }));
+        const poly = new fabric.Polygon(points, {
+            fill: 'rgba(0, 120, 212, 0.3)',
+            stroke: '#0078d4',
+            strokeWidth: 2,
+            selectable: true,
+            evented: true,
+            objectCaching: false
+        });
+
+        const unit = {
+            id: this.generateUUID(),
+            type: 'unit',
+            name: `Unit ${this.units.length + 1}`,
+            category: 'room',
+            restriction: 'restricted',
+            exchangeId: '',
+            levelId: this.currentLevel.id,
+            fabricObject: poly
+        };
+
+        poly.imdfData = unit;
+        this.units.push(unit);
+        this.canvas.add(poly);
+        this.canvas.setActiveObject(poly);
+        this.updateCounts();
+        this.polyPoints = [];
+        this.showDrawingHint('Click to place vertices — double-click or click near start to close the polygon. Esc to cancel.');
+        this.canvas.renderAll();
+    }
+
+    cancelPolygon() {
+        if (this.polyPoints.length === 0) return;
+        this.cancelPolygonPreview();
+        this.polyPoints = [];
+    }
+
+    cancelPolygonPreview() {
+        // Remove all temporary preview objects from canvas
+        [...this.polyLines, ...this.polyDots].forEach(o => this.canvas.remove(o));
+        if (this.previewLine) this.canvas.remove(this.previewLine);
+        this.polyLines = [];
+        this.polyDots = [];
+        this.previewLine = null;
+        this.canvas.renderAll();
+    }
+
+    // ── Edge snapping ─────────────────────────────────────────────
+
+    // Build the offscreen sampling canvas whenever a new floor plan is loaded.
+    // We draw the background image into an offscreen <canvas> at its natural
+    // resolution so we can read pixel values without CORS issues (the image was
+    // uploaded by the user and served from our own origin).
+    buildSnapCanvas() {
+        const bg = this.canvas.backgroundImage;
+        if (!bg) { this.snapCanvas = null; this.snapCtx = null; return; }
+
+        try {
+            const el = bg._originalElement || bg.getElement && bg.getElement();
+            if (!el) { this.snapCanvas = null; return; }
+
+            const w = el.naturalWidth  || el.width  || 800;
+            const h = el.naturalHeight || el.height || 600;
+
+            this.snapCanvas = document.createElement('canvas');
+            this.snapCanvas.width  = w;
+            this.snapCanvas.height = h;
+            this.snapCtx = this.snapCanvas.getContext('2d');
+            this.snapCtx.drawImage(el, 0, 0, w, h);
+        } catch (e) {
+            // Cross-origin or tainted canvas — silently disable snapping
+            this.snapCanvas = null;
+            this.snapCtx = null;
+        }
+    }
+
+    // Map a canvas-coordinate point to the nearest dark edge pixel within
+    // snapRadius.  Returns the original point if no edge is found.
+    snapToEdge(pt) {
+        if (!this.snapEnabled || !this.snapCtx || !this.canvas.backgroundImage) return pt;
+
+        const bg = this.canvas.backgroundImage;
+        // Background image transform: position and scale
+        const bgScaleX = bg.scaleX || 1;
+        const bgScaleY = bg.scaleY || 1;
+        const bgLeft   = bg.left   || 0;
+        const bgTop    = bg.top    || 0;
+        const bgW = (bg._originalElement ? (bg._originalElement.naturalWidth  || bg.width) : bg.width)  || 1;
+        const bgH = (bg._originalElement ? (bg._originalElement.naturalHeight || bg.height) : bg.height) || 1;
+        const bgOriginX = bgLeft - (bgW * bgScaleX) / 2;
+        const bgOriginY = bgTop  - (bgH * bgScaleY) / 2;
+
+        // Convert canvas coords → image pixel coords
+        const imgX = (pt.x - bgOriginX) / bgScaleX;
+        const imgY = (pt.y - bgOriginY) / bgScaleY;
+
+        // Scale snap radius from canvas coords to image coords
+        const imgRadius = this.snapRadius / Math.min(bgScaleX, bgScaleY);
+
+        let bestX = pt.x, bestY = pt.y;
+        let bestEdge = 0;
+        let found = false;
+
+        const r = Math.ceil(imgRadius);
+        const cx = Math.round(imgX), cy = Math.round(imgY);
+        const x0 = Math.max(0, cx - r), x1 = Math.min(this.snapCanvas.width  - 1, cx + r);
+        const y0 = Math.max(0, cy - r), y1 = Math.min(this.snapCanvas.height - 1, cy + r);
+
+        if (x0 >= x1 || y0 >= y1) return pt;
+
+        const imgData = this.snapCtx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+        const data = imgData.data;
+        const stride = (x1 - x0 + 1) * 4;
+
+        for (let dy = 0; dy <= y1 - y0; dy++) {
+            for (let dx = 0; dx <= x1 - x0; dx++) {
+                const px = x0 + dx, py = y0 + dy;
+                const distSq = (px - imgX) ** 2 + (py - imgY) ** 2;
+                if (distSq > imgRadius * imgRadius) continue;
+
+                const idx = dy * stride + dx * 4;
+                const r_val = data[idx], g_val = data[idx+1], b_val = data[idx+2];
+                const brightness = (r_val + g_val + b_val) / 3;
+                // Lower brightness = darker = more likely an edge/wall
+                const edgeScore = (255 - brightness) / 255;
+
+                if (edgeScore > 0.4 && edgeScore > bestEdge) {
+                    bestEdge = edgeScore;
+                    // Convert back to canvas coords
+                    bestX = bgOriginX + px * bgScaleX;
+                    bestY = bgOriginY + py * bgScaleY;
+                    found = true;
+                }
+            }
+        }
+
+        return found ? { x: bestX, y: bestY } : pt;
+    }
+
+    // ── Rectangle unit (legacy quick-place) ──────────────────────
+    placeRectUnit(pointer) {
         const rect = new fabric.Rect({
             left: pointer.x,
             top: pointer.y,
@@ -199,9 +523,11 @@ class IMDFBuilder {
 
         const unit = {
             id: this.generateUUID(),
+            type: 'unit',
             name: `Unit ${this.units.length + 1}`,
             category: 'room',
             restriction: 'restricted',
+            exchangeId: '',
             levelId: this.currentLevel.id,
             fabricObject: rect
         };
@@ -224,6 +550,7 @@ class IMDFBuilder {
 
         const amenity = {
             id: this.generateUUID(),
+            type: 'amenity',
             name: `Amenity ${this.amenities.length + 1}`,
             category: 'seating',
             levelId: this.currentLevel.id,
@@ -244,6 +571,7 @@ class IMDFBuilder {
 
         const fixture = {
             id: this.generateUUID(),
+            type: 'fixture',
             category: 'wall',
             levelId: this.currentLevel.id,
             fabricObject: line
@@ -263,6 +591,7 @@ class IMDFBuilder {
 
         const opening = {
             id: this.generateUUID(),
+            type: 'opening',
             category: 'door',
             levelId: this.currentLevel.id,
             fabricObject: line
@@ -280,16 +609,46 @@ class IMDFBuilder {
             this.selectedObject = obj;
             this.showProperties(obj.imdfData);
         }
+        // Show vertex handles when a polygon is selected in select mode
+        if (obj && obj.type === 'polygon' && this.currentTool === 'select') {
+            this.showVertexHandles(obj);
+        } else {
+            this.removeVertexHandles();
+        }
     }
 
     clearSelection() {
         this.selectedObject = null;
+        this.removeVertexHandles();
         document.getElementById('propertiesPanel').innerHTML = '<p class="hint">Select an item to edit its properties</p>';
     }
 
     showProperties(data) {
         const panel = document.getElementById('propertiesPanel');
-        let html = '';
+
+        // Determine the item type label
+        const typeMap = {
+            unit: 'Unit / Room',
+            amenity: 'Amenity',
+            fixture: 'Fixture',
+            opening: 'Opening / Door'
+        };
+        const typeLabel = typeMap[data.type] || (data.levelId ? 'Item' : 'Unknown');
+
+        let html = `<span class="prop-type-badge">${typeLabel}</span>`;
+
+        // Vertex-edit tip for polygons
+        if (data.type === 'unit' && this.selectedObject && this.selectedObject.type === 'polygon') {
+            html += `<p class="hint" style="margin-bottom:8px">🔴 Drag the orange dots to reshape the room.</p>`;
+        }
+
+        // Read-only ID
+        html += `
+            <div class="property-field">
+                <label>ID:</label>
+                <input type="text" value="${data.id || ''}" readonly />
+            </div>
+        `;
 
         if (data.name !== undefined) {
             html += `
@@ -320,6 +679,17 @@ class IMDFBuilder {
             `;
         }
 
+        // Exchange ID field — only for units (which have a restriction property)
+        if (data.exchangeId !== undefined) {
+            html += `
+                <div class="property-field">
+                    <label>Exchange Room ID:</label>
+                    <input type="text" id="prop-exchangeId" value="${data.exchangeId || ''}"
+                           placeholder="e.g. room.building@contoso.com" />
+                </div>
+            `;
+        }
+
         html += `
             <button id="updatePropertiesBtn" class="btn btn-primary" style="width: 100%; margin-top: 10px;">
                 Update Properties
@@ -328,7 +698,11 @@ class IMDFBuilder {
 
         panel.innerHTML = html;
 
-        // Attach update handler
+        // Auto-apply on blur for text inputs
+        panel.querySelectorAll('input:not([readonly]), select').forEach(el => {
+            el.addEventListener('change', () => this.updateSelectedProperties(data));
+        });
+
         const updateBtn = document.getElementById('updatePropertiesBtn');
         if (updateBtn) {
             updateBtn.addEventListener('click', () => this.updateSelectedProperties(data));
@@ -341,18 +715,23 @@ class IMDFBuilder {
 
         if (nameInput) data.name = nameInput.value;
         if (categoryInput) data.category = categoryInput.value;
+        const exchangeInput = document.getElementById('prop-exchangeId');
+        if (exchangeInput !== null) data.exchangeId = exchangeInput.value;
 
-        alert('Properties updated!');
+        this.showToast('Properties updated', 'success');
     }
 
     deleteSelected() {
         if (!this.selectedObject) {
-            alert('No object selected');
+            this.showToast('No object selected', 'info');
             return;
         }
 
         const data = this.selectedObject.imdfData;
         
+        // Remove vertex handles before deleting
+        this.removeVertexHandles();
+
         // Remove from canvas
         this.canvas.remove(this.selectedObject);
 
@@ -451,7 +830,7 @@ class IMDFBuilder {
         const file = fileInput.files[0];
         
         if (!file) {
-            alert('Please select a file first');
+            this.showToast('Please select a file first', 'error');
             return;
         }
 
@@ -469,12 +848,12 @@ class IMDFBuilder {
             if (response.ok && result.success) {
                 this.floorplanImage = result.path;
                 await this.loadFloorplanToCanvas(result.path);
-                alert('Floor plan uploaded successfully!');
+                this.showToast('Floor plan uploaded successfully!', 'success');
             } else {
-                alert('Upload failed: ' + (result.error || `HTTP ${response.status}`));
+                this.showToast('Upload failed: ' + (result.error || `HTTP ${response.status}`), 'error');
             }
         } catch (error) {
-            alert('Upload error: ' + error.message);
+            this.showToast('Upload error: ' + error.message, 'error');
         }
     }
 
@@ -493,6 +872,13 @@ class IMDFBuilder {
     async loadFloorplanToCanvas(imageUrl) {
         // A PDF can't be drawn as an <img>; rasterize its first page first (issue #4).
         const isPdf = /\.pdf($|\?)/i.test(imageUrl);
+        const isSvg = /\.svg($|\?)/i.test(imageUrl);
+
+        if (isSvg) {
+            await this.loadSvgToCanvas(imageUrl);
+            return;
+        }
+
         const sourceUrl = isPdf ? await this.renderPdfToDataUrl(imageUrl) : imageUrl;
 
         // Fabric v6 returns a Promise from fromURL (the old callback form is gone).
@@ -501,24 +887,12 @@ class IMDFBuilder {
             throw new Error('Failed to load floor plan image');
         }
 
-        // Scale image to fit canvas
-        const scale = Math.min(
-            this.canvas.width / img.width,
-            this.canvas.height / img.height
-        ) * 0.9;
-
-        img.scale(scale);
-        img.set({
-            left: this.canvas.width / 2,
-            top: this.canvas.height / 2,
-            originX: 'center',
-            originY: 'center',
-            selectable: false,
-            evented: false
-        });
+        img.set({ selectable: false, evented: false });
 
         // Fabric v6: backgroundImage is a property; setBackgroundImage() was removed.
         this.canvas.backgroundImage = img;
+        this.refitBackground();
+        this.buildSnapCanvas();
         this.canvas.renderAll();
     }
 
@@ -535,6 +909,59 @@ class IMDFBuilder {
         tmpCanvas.height = viewport.height;
         await page.render({ canvasContext: tmpCanvas.getContext('2d'), viewport }).promise;
         return tmpCanvas.toDataURL('image/png');
+    }
+
+    // Re-scale and re-centre the background image to fill 90% of the current
+    // canvas size.  Called after every resize so the floor plan tracks the window.
+    refitBackground() {
+        const bg = this.canvas.backgroundImage;
+        if (!bg) return;
+
+        // Natural dimensions — for a Fabric Image use width/height; for an SVG
+        // Group use the original width/height stored on the object.
+        const naturalW = bg._originalElement ? bg._originalElement.naturalWidth || bg.width : bg.width;
+        const naturalH = bg._originalElement ? bg._originalElement.naturalHeight || bg.height : bg.height;
+        const srcW = naturalW || bg.width || 1;
+        const srcH = naturalH || bg.height || 1;
+
+        const scale = Math.min(
+            this.canvas.width  / srcW,
+            this.canvas.height / srcH
+        ) * 0.9;
+
+        bg.scale(scale);
+        bg.set({
+            left: this.canvas.width  / 2,
+            top:  this.canvas.height / 2,
+            originX: 'center',
+            originY: 'center'
+        });
+    }
+
+    async loadSvgToCanvas(svgUrl) {
+        // Fabric v6 exposes loadSVGFromURL on the util namespace.
+        const loadFn = (fabric.util && fabric.util.loadSVGFromURL)
+            ? fabric.util.loadSVGFromURL
+            : fabric.loadSVGFromURL;
+
+        if (!loadFn) {
+            throw new Error('SVG loading not supported by this version of Fabric.js');
+        }
+
+        const { objects, options } = await new Promise((resolve, reject) => {
+            loadFn(svgUrl, (objects, options) => {
+                if (!objects) reject(new Error('Failed to parse SVG'));
+                else resolve({ objects, options });
+            });
+        });
+
+        const group = fabric.util.groupSVGElements(objects, options);
+        group.set({ selectable: false, evented: false });
+
+        this.canvas.backgroundImage = group;
+        this.refitBackground();
+        this.buildSnapCanvas();
+        this.canvas.renderAll();
     }
 
     zoomIn() {
@@ -621,12 +1048,12 @@ class IMDFBuilder {
             
             if (result.success) {
                 this.projectId = result.projectId;
-                alert('Project saved successfully!');
+                this.showToast('Project saved successfully!', 'success');
             } else {
-                alert('Save failed: ' + result.error);
+                this.showToast('Save failed: ' + result.error, 'error');
             }
         } catch (error) {
-            alert('Save error: ' + error.message);
+            this.showToast('Save error: ' + error.message, 'error');
         }
     }
 
@@ -655,7 +1082,7 @@ class IMDFBuilder {
 
             document.getElementById('loadProjectModal').style.display = 'block';
         } catch (error) {
-            alert('Error loading projects: ' + error.message);
+            this.showToast('Error loading projects: ' + error.message, 'error');
         }
     }
 
@@ -741,9 +1168,9 @@ class IMDFBuilder {
 
             this.updateCounts();
             document.getElementById('loadProjectModal').style.display = 'none';
-            alert('Project loaded successfully!');
+            this.showToast('Project loaded successfully!', 'success');
         } catch (error) {
-            alert('Error loading project: ' + error.message);
+            this.showToast('Error loading project: ' + error.message, 'error');
         }
     }
 
@@ -766,6 +1193,7 @@ class IMDFBuilder {
             this.renderLevelsList();
             this.updateCounts();
             this.clearSelection();
+            this.showToast('New project started', 'info');
         }
     }
 
@@ -795,6 +1223,7 @@ class IMDFBuilder {
                 name: u.name,
                 category: u.category,
                 restriction: u.restriction,
+                exchangeId: u.exchangeId || '',
                 levelId: u.levelId,
                 coordinates: this.getObjectCoordinates(u.fabricObject),
                 display_point: this.getDisplayPoint(u.fabricObject)
@@ -839,16 +1268,124 @@ class IMDFBuilder {
                 a.click();
                 window.URL.revokeObjectURL(url);
                 document.body.removeChild(a);
-                alert('IMDF files exported successfully!');
+                this.showToast('IMDF files exported successfully!', 'success');
             } else {
-                alert('Export failed');
+                this.showToast('Export failed', 'error');
             }
         } catch (error) {
-            alert('Export error: ' + error.message);
+            this.showToast('Export error: ' + error.message, 'error');
         }
     }
 
-    // Helper methods
+    // ── Polygon vertex editing ────────────────────────────────────
+
+    showVertexHandles(polygon) {
+        this.removeVertexHandles();
+
+        // Disable the polygon's own transform controls while editing vertices
+        polygon.set({
+            hasControls: false,
+            hasBorders: false,
+            lockMovementX: true,
+            lockMovementY: true
+        });
+        this.canvas.renderAll();
+
+        const points = polygon.points;
+        if (!points) return;
+
+        // pathOffset is the polygon's internal origin used by Fabric
+        const ox = polygon.pathOffset ? polygon.pathOffset.x : 0;
+        const oy = polygon.pathOffset ? polygon.pathOffset.y : 0;
+
+        this.vertexHandles = points.map((pt, i) => {
+            const handle = new fabric.Circle({
+                left:    polygon.left + pt.x - ox,
+                top:     polygon.top  + pt.y - oy,
+                radius: 6,
+                fill: '#ff5c00',
+                stroke: '#ffffff',
+                strokeWidth: 2,
+                originX: 'center',
+                originY: 'center',
+                hasControls: false,
+                hasBorders: false,
+                selectable: true,
+                evented: true,
+                _vertexHandle: true,
+                _polygon: polygon,
+                _vertexIndex: i
+            });
+            this.canvas.add(handle);
+            return handle;
+        });
+
+        this.canvas.renderAll();
+    }
+
+    removeVertexHandles() {
+        if (!this.vertexHandles) return;
+        this.vertexHandles.forEach(h => this.canvas.remove(h));
+        this.vertexHandles = null;
+
+        // Re-enable transform controls on the previously-edited polygon
+        if (this.selectedObject && this.selectedObject.type === 'polygon') {
+            this.selectedObject.set({
+                hasControls: true,
+                hasBorders: true,
+                lockMovementX: false,
+                lockMovementY: false
+            });
+            this.canvas.renderAll();
+        }
+    }
+
+    updatePolygonVertex(handle) {
+        const polygon = handle._polygon;
+        const i = handle._vertexIndex;
+        if (!polygon || i === undefined) return;
+
+        const ox = polygon.pathOffset ? polygon.pathOffset.x : 0;
+        const oy = polygon.pathOffset ? polygon.pathOffset.y : 0;
+
+        // Snap to edge if enabled
+        const raw = { x: handle.left, y: handle.top };
+        const snapped = this.snapEnabled ? this.snapToEdge(raw) : raw;
+
+        // Move handle to snapped position
+        handle.set({ left: snapped.x, top: snapped.y });
+
+        // Update the polygon's point — coords are relative to polygon.left/top minus pathOffset
+        polygon.points[i] = {
+            x: snapped.x - polygon.left + ox,
+            y: snapped.y - polygon.top  + oy
+        };
+
+        // Force Fabric to recompute the polygon geometry
+        polygon.set({ dirty: true });
+        this.canvas.renderAll();
+    }
+
+    // ── Toast notification helper ────────────────────────────────
+    showToast(message, type = 'info') {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+
+        const icons = { success: '✓', error: '✕', info: 'ℹ' };
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span><span>${message}</span>`;
+        container.appendChild(toast);
+
+        const dismiss = () => {
+            toast.classList.add('removing');
+            toast.addEventListener('animationend', () => toast.remove(), { once: true });
+        };
+        setTimeout(dismiss, 4000);
+        toast.addEventListener('click', dismiss);
+    }
+
+    // ── UUID generator ───────────────────────────────────────────
     generateUUID() {
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
             const r = Math.random() * 16 | 0;
@@ -873,13 +1410,24 @@ class IMDFBuilder {
     }
 
     getObjectCoordinates(obj) {
-        // Convert fabric object to polygon coordinates
         if (!obj) return [[[0, 0], [0, 0.0001], [0.0001, 0.0001], [0.0001, 0], [0, 0]]];
-        
-        const left = obj.left / 100000;
-        const top = obj.top / 100000;
-        const width = (obj.width * obj.scaleX) / 100000;
-        const height = (obj.height * obj.scaleY) / 100000;
+
+        // Fabric Polygon — export its actual vertices
+        if (obj.type === 'polygon' && obj.points) {
+            const coords = obj.points.map(p => [
+                (obj.left + p.x - (obj.pathOffset ? obj.pathOffset.x : 0)) / 100000,
+                (obj.top  + p.y - (obj.pathOffset ? obj.pathOffset.y : 0)) / 100000
+            ]);
+            // Close the ring
+            if (coords.length > 0) coords.push(coords[0]);
+            return [coords];
+        }
+
+        // Fabric Rect (legacy rectangle units)
+        const left   = obj.left / 100000;
+        const top    = obj.top  / 100000;
+        const width  = (obj.width  * (obj.scaleX || 1)) / 100000;
+        const height = (obj.height * (obj.scaleY || 1)) / 100000;
         
         return [[
             [left, top],

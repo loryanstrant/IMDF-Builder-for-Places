@@ -59,8 +59,8 @@
                 <div class="panel">
                     <h2>Floor Plan</h2>
                     <div class="form-group">
-                        <label for="floorplanUpload">Upload Floor Plan (PDF or Image):</label>
-                        <input type="file" id="floorplanUpload" accept=".pdf,.png,.jpg,.jpeg">
+                        <label for="floorplanUpload">Upload Floor Plan (PDF, Image, or SVG):</label>
+                            <input type="file" id="floorplanUpload" accept=".pdf,.png,.jpg,.jpeg,.svg">
                         <button id="uploadBtn" class="btn btn-primary">Upload</button>
                     </div>
                 </div>
@@ -94,12 +94,20 @@
                 <div class="panel">
                     <h2>Place Items</h2>
                     <div class="tool-buttons">
-                        <button id="placeUnitBtn" class="btn btn-tool" data-tool="unit">Place Unit (Room)</button>
-                        <button id="placeAmenityBtn" class="btn btn-tool" data-tool="amenity">Place Amenity</button>
-                        <button id="placeFixtureBtn" class="btn btn-tool" data-tool="fixture">Place Fixture</button>
-                        <button id="placeOpeningBtn" class="btn btn-tool" data-tool="opening">Place Opening (Door)</button>
-                        <button id="selectModeBtn" class="btn btn-tool active" data-tool="select">Select Mode</button>
-                        <button id="deleteBtn" class="btn btn-danger">Delete Selected</button>
+                        <button id="placeUnitBtn" class="btn btn-tool" data-tool="unit">✏ Draw Unit (Polygon)</button>
+                        <button id="placeRectUnitBtn" class="btn btn-tool" data-tool="unit-rect">▭ Place Unit (Rectangle)</button>
+                        <button id="placeAmenityBtn" class="btn btn-tool" data-tool="amenity">● Place Amenity</button>
+                        <button id="placeFixtureBtn" class="btn btn-tool" data-tool="fixture">— Place Fixture</button>
+                        <button id="placeOpeningBtn" class="btn btn-tool" data-tool="opening">⌗ Place Opening (Door)</button>
+                        <button id="selectModeBtn" class="btn btn-tool active" data-tool="select">↖ Select Mode</button>
+                        <button id="deleteBtn" class="btn btn-danger">✕ Delete Selected</button>
+                    </div>
+                    <div class="snap-control">
+                        <label class="snap-label">
+                            <input type="checkbox" id="snapToggle" checked />
+                            Edge snapping
+                        </label>
+                        <span class="snap-hint">Snaps to floor plan lines</span>
                     </div>
                 </div>
 
@@ -114,13 +122,15 @@
             <!-- Center - Canvas -->
             <main class="canvas-area">
                 <div class="canvas-controls">
-                    <button id="zoomInBtn" class="btn btn-sm">Zoom In</button>
-                    <button id="zoomOutBtn" class="btn btn-sm">Zoom Out</button>
-                    <button id="resetViewBtn" class="btn btn-sm">Reset View</button>
+                    <button id="zoomInBtn" class="btn btn-sm">＋ Zoom In</button>
+                    <button id="zoomOutBtn" class="btn btn-sm">－ Zoom Out</button>
+                    <button id="resetViewBtn" class="btn btn-sm">⤢ Reset View</button>
                     <span id="canvasInfo" class="info-text"></span>
                 </div>
+                <div id="drawingHint" class="drawing-hint" style="display:none"></div>
                 <div class="canvas-container">
                     <canvas id="mainCanvas"></canvas>
+                    <div id="snapCursor" class="snap-cursor"></div>
                 </div>
             </main>
 
@@ -188,5 +198,6 @@
     </div>
 
     <script src="/js/app.js"></script>
+    <div id="toast-container"></div>
 </body>
 </html>
