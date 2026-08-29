@@ -53,11 +53,11 @@ const upload = multer({
   storage: storage,
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
   fileFilter: (req, file, cb) => {
-    const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'application/pdf'];
+    const allowedTypes = ['image/png', 'image/jpeg', 'image/jpg', 'application/pdf', 'image/svg+xml'];
     if (allowedTypes.includes(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only PNG, JPEG, and PDF are allowed.'));
+        cb(new Error('Invalid file type. Only PNG, JPEG, PDF, and SVG are allowed.'));
     }
   }
 });
@@ -305,7 +305,8 @@ function generateIMDFFiles(projectData) {
         name: unit.name || 'Unit',
         alt_name: unit.alt_name || {},
         display_point: unit.display_point || { type: 'Point', coordinates: [0, 0] },
-        level: unit.levelId
+      level: unit.levelId,
+      ...(unit.exchangeId ? { exchange_id: unit.exchangeId } : {})
       }
     }))
   };
