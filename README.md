@@ -4,7 +4,8 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
 
 ## Features
 
-- 🖼️ **Floor Plan Upload**: Upload PDF or image files of your floor plans
+- 🖼️ **Floor Plan Upload**: Upload PDF or image files of your floor plans — multi-page PDFs can become one level per page
+- 🌍 **Real Georeferencing**: Calibrate the scale from a known distance, set an anchor point and rotation, and every exported feature lands on the real world at real size
 - 🔍 **Pan & Zoom**: ALT + drag to pan, mouse wheel to zoom, with keyboard shortcuts
 - 🏢 **Interactive Editor**: Visual canvas-based editor for placing indoor mapping elements
 - 📍 **IMDF Elements Support**:
@@ -14,13 +15,16 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
   - Openings (doors, entrances)
   - Levels (floors)
 - 💾 **Project Management**: Save and load projects for later editing
-- 📦 **Export**: Generate complete IMDF file packages as ZIP archives
+- 📦 **Export**: Generate complete, spec-conformant IMDF file packages as ZIP archives — including a real `footprint.geojson` and `address.geojson`
 - 🌓 **Dark Mode**: Toggle in the header; remembers your choice and follows your OS preference
 - 🐳 **Docker Support**: Easy deployment with Docker and Docker Compose
 
 
 <img width="1280" height="720" alt="508439876-18132b6d-a9e5-442c-80ca-4a68871fbd1e" src="https://github.com/user-attachments/assets/d4df6899-b70f-451e-9d73-d1c2b2cf975a" />
 
+
+> **New here?** [docs/USAGE.md](docs/USAGE.md) is the practical walkthrough — georeferencing,
+> L-shaped rooms, Exchange IDs and a pre-export checklist.
 
 ## Quick Start
 
@@ -116,16 +120,35 @@ docker run -d -p 3000:3000 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/a
 1. Click "Choose File" in the Floor Plan section
 2. Select a PDF or image file of your floor plan
 3. Click "Upload" to load it onto the canvas
+4. For a multi-page PDF, pick the page to trace — or click **Create one level per page**
+   to turn the whole document into a stack of levels in one go
 
-### Step 3: Add Levels
+### Step 3: Georeference the Plan
+
+Do this **before** drawing: every exported coordinate depends on it.
+
+1. Click **⌖ Set Anchor Point** and click a feature whose real coordinates you know —
+   a building corner or main entrance, *not* the middle of the building
+2. Paste that feature's latitude and longitude into "Venue Coordinates"
+3. Click **⟷ Calibrate from Two Points**, click the ends of something of known length
+   (a scale bar, a dimension line, a 0.9 m door) and enter that length in metres
+4. If the plan's "up" is not true north, enter the clockwise rotation in degrees
+
+The readout shows `● Calibrated — 1 px = 0.0500 m` once this is done. Without it, the
+export warns you and the result has no real size or position.
+
+### Step 4: Add Levels
 1. In the "Levels" section, enter a level name (e.g., "Ground Floor")
 2. Enter the level number (0 for ground floor, 1 for first floor, etc.)
 3. Click "Add Level"
 4. Click on a level in the list to make it active for placing items
 
-### Step 4: Place Items on the Floor Plan
+### Step 5: Place Items on the Floor Plan
 1. Select a tool from the "Place Items" section:
-   - **Place Unit**: For rooms, offices, conference rooms
+   - **Draw Unit (Polygon)**: For any room shape — including L-shaped and irregular
+     rooms. Click each corner, then click the first point again to close it; drag the
+     vertex handles afterwards to adjust
+   - **Place Unit (Rectangle)**: Quick rectangular rooms
    - **Place Amenity**: For desks, seating, facilities
    - **Place Fixture**: For walls, windows
    - **Place Opening**: For doors, entrances
@@ -143,19 +166,26 @@ docker run -d -p 3000:3000 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/a
 
 > Items placed imprecisely? Turn off **Edge snapping** in the toolbar.
 
-### Step 5: Edit Item Properties
+### Step 6: Edit Item Properties
 1. Click "Select Mode" button
 2. Click on an item on the canvas
 3. Edit properties in the "Selected Item Properties" panel:
    - Change the name
    - Update the category
+   - Set the **Exchange ID** — the room mailbox's primary SMTP address
+     (`room-3-12@contoso.com`). This is what links the room to Microsoft Places;
+     leave it blank for corridors and lobbies
 4. Click "Update Properties" to save changes
 
-### Step 6: Export IMDF Files
-1. Click the "Export IMDF Files" button in the right sidebar
-2. A ZIP file will be downloaded containing all required IMDF files:
+### Step 7: Fill in the Address, then Export IMDF Files
+1. Fill in the Address panel — IMDF requires an address, and Places uses it to place
+   the venue. The country is a two-letter ISO code (`AU`, `US`, `GB`)
+2. Click the "Export IMDF Files" button in the right sidebar
+3. A ZIP file will be downloaded containing all required IMDF files:
    - venue.geojson
-   - building.geojson
+   - building.geojson (geometry is `null` by design — the shape lives in footprint)
+   - footprint.geojson
+   - address.geojson
    - level.geojson
    - unit.geojson
    - amenity.geojson
@@ -165,7 +195,7 @@ docker run -d -p 3000:3000 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/a
    - manifest.json
    - And other required empty files
 
-### Step 7: Upload to Microsoft Places
+### Step 8: Upload to Microsoft Places
 1. Extract the downloaded ZIP file
 2. Follow Microsoft's documentation to upload the files to Microsoft Places
 3. Reference: [Configure Maps in Microsoft Places](https://learn.microsoft.com/en-us/microsoft-365/places/configure-maps-in-places)
@@ -179,6 +209,13 @@ This tool generates files that comply with the IMDF (Indoor Mapping Data Format)
 - Required properties for each feature type
 - WGS84 coordinate system (latitude/longitude)
 - Relationships between features
+- Counter-clockwise exterior rings, as RFC 7946 requires
+- `name` and `alt_name` as IMDF `LABELS` objects, not bare strings
+- Unlocated buildings (`"geometry": null`) with the extent carried by `footprint.geojson`
+
+Geometry is derived bottom-up: the items you draw define each level's extent, the levels
+define the building footprint, and the footprint defines the venue boundary — so IMDF's
+containment rules hold without you tracing four nested outlines by hand.
 
 ## Project Structure
 
@@ -189,8 +226,14 @@ IMDF-Builder-for-Places/
 │   ├── index.html        # Main HTML page
 │   ├── css/
 │   │   └── styles.css    # Application styles
-│   └── js/
-│       └── app.js        # Application logic
+│   ├── js/
+│   │   ├── app.js        # Application logic
+│   │   └── geo.js        # Georeferencing engine (canvas pixels <-> lat/lon)
+│   └── lib/              # Vendored third-party libraries
+├── imdf.js               # IMDF file generation
+├── docs/
+│   └── USAGE.md          # Practical walkthrough
+├── test/                 # Unit tests (node --test)
 ├── uploads/              # Uploaded floor plans (created at runtime)
 ├── projects/             # Saved projects (created at runtime)
 ├── package.json          # Node.js dependencies
@@ -205,6 +248,15 @@ IMDF-Builder-for-Places/
 - Project persistence as JSON files
 - IMDF file generation
 - ZIP archive creation for exports
+
+### Testing
+
+```bash
+npm test
+```
+
+Runs the georeferencing, IMDF-generation and project round-trip suites with Node's
+built-in test runner. No extra dependencies.
 
 ### Frontend
 - HTML5/CSS3/JavaScript
@@ -245,8 +297,8 @@ docker pull ghcr.io/loryanstrant/imdf-builder-for-places:v1.0.0
 ### Issue: Cannot upload floor plan
 - Check file size (max 50MB)
 - Ensure file is PDF, PNG, or JPEG format
-- Both raster images (PNG/JPEG) and PDFs are supported. For a PDF, the **first page** is
-  rendered onto the canvas.
+- Both raster images (PNG/JPEG) and PDFs are supported. For a multi-page PDF you choose
+  which page to trace, or create one level per page.
 
 ### Issue: Docker container won't start
 - Ensure Docker Desktop is running
@@ -256,6 +308,17 @@ docker pull ghcr.io/loryanstrant/imdf-builder-for-places:v1.0.0
 ### Issue: Items not appearing on canvas
 - Ensure you've added and selected a level first
 - Check that the correct tool is selected
+- With more than one level, only the selected level's items are shown
+
+### Issue: Exported rooms are the wrong size or in the wrong place
+- Re-check the scale calibration if the size is wrong
+- Re-check the anchor point if the position is wrong — anchor on a corner you can
+  identify, not the middle of the building
+- Open `unit.geojson` at [geojson.io](https://geojson.io) to see where it actually landed
+
+### Issue: footprint.geojson is empty
+- Fixed in v1.4.0. Earlier versions always exported an empty footprint and put a
+  placeholder polygon on the building instead, which is the inverse of what IMDF wants.
 
 ## Contributing
 
