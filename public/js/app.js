@@ -28,7 +28,7 @@ class IMDFBuilder {
         this.snapRadius = 12;       // pixels (canvas coords)
         this.snapCanvas = null;     // offscreen canvas for pixel sampling
         this.snapCtx = null;
-        
+
         this.init();
     }
 
@@ -95,11 +95,11 @@ class IMDFBuilder {
     initCanvas() {
         const canvasElement = document.getElementById('mainCanvas');
         const container = canvasElement.parentElement;
-        
+
         // Set canvas size to fill container
         canvasElement.width = container.clientWidth;
         canvasElement.height = container.clientHeight;
-        
+
         this.canvas = new fabric.Canvas('mainCanvas', {
             backgroundColor: '#ffffff',
             selection: true
@@ -125,10 +125,97 @@ class IMDFBuilder {
         this.canvas.on('mouse:move', (e) => this.handleCanvasMove(e));
         this.canvas.on('mouse:dblclick', (e) => this.handleCanvasDblClick(e));
 
-        // Escape cancels an in-progress polygon
-        window.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') this.cancelPolygon();
+        /**
+         * Mouse Panning and Zoom with Mouse Wheel added
+         * @author Marvin Niermann
+         */
+
+        let isPanning = false;
+        let lastPosX = 0;
+        let lastPosY = 0;
+
+        this.canvas.on('mouse:down', (opt) => {
+
+            if (opt.e.altKey) {
+
+                isPanning = true;
+
+                lastPosX = opt.e.clientX;
+                lastPosY = opt.e.clientY;
+
+                this.canvas.selection = false;
+            }
+
         });
+
+        this.canvas.on('mouse:move', (opt) => {
+            if (!isPanning) return;
+
+            const e = opt.e;
+            const vpt = this.canvas.viewportTransform;
+
+            vpt[4] += e.clientX - lastPosX;
+            vpt[5] += e.clientY - lastPosY;
+
+            this.canvas.requestRenderAll();
+
+            lastPosX = e.clientX;
+            lastPosY = e.clientY;
+        });
+
+        this.canvas.on('mouse:up', () => {
+            isPanning = false;
+        });
+
+        // Zoom with Mouse Wheel
+        this.canvas.on('mouse:wheel', (opt) => {
+            const delta = opt.e.deltaY;
+
+            let zoom = this.canvas.getZoom();
+
+            zoom *= Math.pow(0.999, delta);
+
+            if (zoom > 10) zoom = 10;
+            if (zoom < 0.1) zoom = 0.1;
+
+            this.canvas.zoomToPoint(
+                {
+                    x: opt.e.offsetX,
+                    y: opt.e.offsetY
+                },
+                zoom
+            );
+            if (this.vertexHandles) {
+
+                const radius = Math.max(2, 6 / zoom);
+
+                this.vertexHandles.forEach(handle => {
+                    handle.set({
+                        radius: radius,
+                        strokeWidth: Math.max(1, 2 / zoom)
+                    });
+                });
+
+            }
+
+            opt.e.preventDefault();
+            opt.e.stopPropagation();
+        });
+
+        // Delete selected Object with pressing DELETE Key
+        window.addEventListener('keydown', (e) => {
+
+            if (e.key === 'Delete') {
+                this.deleteSelected();
+            }
+
+            if (e.key === 'Escape') {
+                this.cancelPolygon();
+            }
+
+        });
+
+        /* End */
 
         // When a polygon vertex handle moves, update the polygon points
         this.canvas.on('object:moving', (e) => {
@@ -144,13 +231,13 @@ class IMDFBuilder {
         document.getElementById('newProjectBtn').addEventListener('click', () => this.newProject());
         document.getElementById('saveProjectBtn').addEventListener('click', () => this.saveProject());
         document.getElementById('loadProjectBtn').addEventListener('click', () => this.showLoadProjectModal());
-        
+
         // Upload floor plan
         document.getElementById('uploadBtn').addEventListener('click', () => this.uploadFloorplan());
-        
+
         // Level management
         document.getElementById('addLevelBtn').addEventListener('click', () => this.addLevel());
-        
+
         // Tool selection
         document.querySelectorAll('.btn-tool').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -193,7 +280,7 @@ class IMDFBuilder {
         document.querySelectorAll('.btn-tool').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tool === tool);
         });
-        
+
         if (tool === 'select') {
             this.canvas.selection = true;
             this.canvas.isDrawingMode = false;
@@ -207,7 +294,7 @@ class IMDFBuilder {
                 this.hideDrawingHint();
             }
         }
-        
+
         this.updateCanvasInfo(`Tool: ${tool}`);
     }
 
@@ -223,6 +310,14 @@ class IMDFBuilder {
 
     handleCanvasClick(event) {
         if (!event.pointer || this.currentTool === 'select') return;
+
+        /**
+         * No placing when moving the Map or while Object is selected
+         */
+        if (event.e.altKey) return;
+        if (this.selectedObject) return;
+        /* End */
+
         // Ignore clicks on vertex handles
         if (event.target && event.target._vertexHandle) return;
         if (!this.currentLevel) {
@@ -291,10 +386,13 @@ class IMDFBuilder {
         if (!show) { el.style.display = 'none'; return; }
         // Convert canvas coords back to DOM coords
         const vpt = this.canvas.viewportTransform;
-        const x = snapped.x * vpt[0] + vpt[4];
-        const y = snapped.y * vpt[3] + vpt[5];
-        el.style.left = x + 'px';
-        el.style.top  = y + 'px';
+        const point = fabric.util.transformPoint(
+            new fabric.Point(snapped.x, snapped.y),
+            this.canvas.viewportTransform
+        );
+
+        el.style.left = point.x + 'px';
+        el.style.top = point.y + 'px';
         el.style.display = 'block';
     }
 
@@ -308,7 +406,7 @@ class IMDFBuilder {
             const first = this.polyPoints[0];
             const dx = pointer.x - first.x;
             const dy = pointer.y - first.y;
-            if (Math.sqrt(dx*dx + dy*dy) < CLOSE_RADIUS) {
+            if (Math.sqrt(dx * dx + dy * dy) < CLOSE_RADIUS) {
                 this.closePolygon();
                 return;
             }
@@ -321,7 +419,7 @@ class IMDFBuilder {
         const dot = new fabric.Circle({
             left: pointer.x,
             top: pointer.y,
-            radius: 4,
+            radius: Math.max(2, 6 / this.canvas.getZoom()),
             fill: this.polyPoints.length === 1 ? '#28a745' : '#ff5c00',
             stroke: '#fff',
             strokeWidth: 1.5,
@@ -431,11 +529,11 @@ class IMDFBuilder {
             const el = bg._originalElement || bg.getElement && bg.getElement();
             if (!el) { this.snapCanvas = null; return; }
 
-            const w = el.naturalWidth  || el.width  || 800;
+            const w = el.naturalWidth || el.width || 800;
             const h = el.naturalHeight || el.height || 600;
 
             this.snapCanvas = document.createElement('canvas');
-            this.snapCanvas.width  = w;
+            this.snapCanvas.width = w;
             this.snapCanvas.height = h;
             this.snapCtx = this.snapCanvas.getContext('2d');
             this.snapCtx.drawImage(el, 0, 0, w, h);
@@ -455,12 +553,12 @@ class IMDFBuilder {
         // Background image transform: position and scale
         const bgScaleX = bg.scaleX || 1;
         const bgScaleY = bg.scaleY || 1;
-        const bgLeft   = bg.left   || 0;
-        const bgTop    = bg.top    || 0;
-        const bgW = (bg._originalElement ? (bg._originalElement.naturalWidth  || bg.width) : bg.width)  || 1;
+        const bgLeft = bg.left || 0;
+        const bgTop = bg.top || 0;
+        const bgW = (bg._originalElement ? (bg._originalElement.naturalWidth || bg.width) : bg.width) || 1;
         const bgH = (bg._originalElement ? (bg._originalElement.naturalHeight || bg.height) : bg.height) || 1;
         const bgOriginX = bgLeft - (bgW * bgScaleX) / 2;
-        const bgOriginY = bgTop  - (bgH * bgScaleY) / 2;
+        const bgOriginY = bgTop - (bgH * bgScaleY) / 2;
 
         // Convert canvas coords → image pixel coords
         const imgX = (pt.x - bgOriginX) / bgScaleX;
@@ -475,7 +573,7 @@ class IMDFBuilder {
 
         const r = Math.ceil(imgRadius);
         const cx = Math.round(imgX), cy = Math.round(imgY);
-        const x0 = Math.max(0, cx - r), x1 = Math.min(this.snapCanvas.width  - 1, cx + r);
+        const x0 = Math.max(0, cx - r), x1 = Math.min(this.snapCanvas.width - 1, cx + r);
         const y0 = Math.max(0, cy - r), y1 = Math.min(this.snapCanvas.height - 1, cy + r);
 
         if (x0 >= x1 || y0 >= y1) return pt;
@@ -491,7 +589,7 @@ class IMDFBuilder {
                 if (distSq > imgRadius * imgRadius) continue;
 
                 const idx = dy * stride + dx * 4;
-                const r_val = data[idx], g_val = data[idx+1], b_val = data[idx+2];
+                const r_val = data[idx], g_val = data[idx + 1], b_val = data[idx + 2];
                 const brightness = (r_val + g_val + b_val) / 3;
                 // Lower brightness = darker = more likely an edge/wall
                 const edgeScore = (255 - brightness) / 255;
@@ -542,7 +640,7 @@ class IMDFBuilder {
         const circle = new fabric.Circle({
             left: pointer.x,
             top: pointer.y,
-            radius: 15,
+            radius: Math.max(2, 15 / this.canvas.getZoom()),
             fill: 'rgba(40, 167, 69, 0.5)',
             stroke: '#28a745',
             strokeWidth: 2
@@ -728,7 +826,7 @@ class IMDFBuilder {
         }
 
         const data = this.selectedObject.imdfData;
-        
+
         // Remove vertex handles before deleting
         this.removeVertexHandles();
 
@@ -801,7 +899,7 @@ class IMDFBuilder {
     removeLevel(levelId) {
         // Remove level
         this.levels = this.levels.filter(l => l.id !== levelId);
-        
+
         // Remove associated items from canvas
         const itemsToRemove = [];
         this.canvas.getObjects().forEach(obj => {
@@ -828,7 +926,7 @@ class IMDFBuilder {
     async uploadFloorplan() {
         const fileInput = document.getElementById('floorplanUpload');
         const file = fileInput.files[0];
-        
+
         if (!file) {
             this.showToast('Please select a file first', 'error');
             return;
@@ -925,14 +1023,14 @@ class IMDFBuilder {
         const srcH = naturalH || bg.height || 1;
 
         const scale = Math.min(
-            this.canvas.width  / srcW,
+            this.canvas.width / srcW,
             this.canvas.height / srcH
         ) * 0.9;
 
         bg.scale(scale);
         bg.set({
-            left: this.canvas.width  / 2,
-            top:  this.canvas.height / 2,
+            left: this.canvas.width / 2,
+            top: this.canvas.height / 2,
             originX: 'center',
             originY: 'center'
         });
@@ -982,7 +1080,7 @@ class IMDFBuilder {
 
     async saveProject() {
         const projectName = document.getElementById('projectName').value || 'Untitled Project';
-        
+
         const projectData = {
             projectName: projectName,
             venue: {
@@ -1045,7 +1143,7 @@ class IMDFBuilder {
             });
 
             const result = await response.json();
-            
+
             if (result.success) {
                 this.projectId = result.projectId;
                 this.showToast('Project saved successfully!', 'success');
@@ -1103,13 +1201,13 @@ class IMDFBuilder {
             // Load project data
             this.projectId = project.id;
             document.getElementById('projectName').value = project.name;
-            
+
             const data = project.data;
-            
+
             if (data.venue) {
                 document.getElementById('venueCoords').value = data.venue.coordinates.join(', ');
             }
-            
+
             if (data.building) {
                 document.getElementById('buildingName').value = data.building.name;
             }
@@ -1154,7 +1252,7 @@ class IMDFBuilder {
                     const circle = new fabric.Circle({
                         left: 200,
                         top: 200,
-                        radius: 15,
+                        radius: Math.max(2, 15 / this.canvas.getZoom()),
                         fill: 'rgba(40, 167, 69, 0.5)',
                         stroke: '#28a745',
                         strokeWidth: 2
@@ -1185,11 +1283,11 @@ class IMDFBuilder {
             this.currentLevel = null;
             this.projectId = null;
             this.floorplanImage = null;
-            
+
             document.getElementById('projectName').value = '';
             document.getElementById('buildingName').value = '';
             document.getElementById('venueCoords').value = '0, 0';
-            
+
             this.renderLevelsList();
             this.updateCounts();
             this.clearSelection();
@@ -1199,7 +1297,7 @@ class IMDFBuilder {
 
     async exportIMDF() {
         const projectName = document.getElementById('projectName').value || 'Untitled Project';
-        
+
         const projectData = {
             venue: {
                 id: this.generateUUID(),
@@ -1300,10 +1398,9 @@ class IMDFBuilder {
 
         this.vertexHandles = points.map((pt, i) => {
             const handle = new fabric.Circle({
-                left:    polygon.left + pt.x - ox,
-                top:     polygon.top  + pt.y - oy,
-                radius: 6,
-                fill: '#ff5c00',
+                left: polygon.left + pt.x - ox,
+                top: polygon.top + pt.y - oy,
+                radius: Math.max(2, 16 / this.canvas.getZoom()), fill: '#ff5c00',
                 stroke: '#ffffff',
                 strokeWidth: 2,
                 originX: 'center',
@@ -1358,7 +1455,7 @@ class IMDFBuilder {
         // Update the polygon's point — coords are relative to polygon.left/top minus pathOffset
         polygon.points[i] = {
             x: snapped.x - polygon.left + ox,
-            y: snapped.y - polygon.top  + oy
+            y: snapped.y - polygon.top + oy
         };
 
         // Force Fabric to recompute the polygon geometry
@@ -1387,7 +1484,7 @@ class IMDFBuilder {
 
     // ── UUID generator ───────────────────────────────────────────
     generateUUID() {
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
             const r = Math.random() * 16 | 0;
             const v = c === 'x' ? r : (r & 0x3 | 0x8);
             return v.toString(16);
@@ -1416,7 +1513,7 @@ class IMDFBuilder {
         if (obj.type === 'polygon' && obj.points) {
             const coords = obj.points.map(p => [
                 (obj.left + p.x - (obj.pathOffset ? obj.pathOffset.x : 0)) / 100000,
-                (obj.top  + p.y - (obj.pathOffset ? obj.pathOffset.y : 0)) / 100000
+                (obj.top + p.y - (obj.pathOffset ? obj.pathOffset.y : 0)) / 100000
             ]);
             // Close the ring
             if (coords.length > 0) coords.push(coords[0]);
@@ -1424,11 +1521,11 @@ class IMDFBuilder {
         }
 
         // Fabric Rect (legacy rectangle units)
-        const left   = obj.left / 100000;
-        const top    = obj.top  / 100000;
-        const width  = (obj.width  * (obj.scaleX || 1)) / 100000;
+        const left = obj.left / 100000;
+        const top = obj.top / 100000;
+        const width = (obj.width * (obj.scaleX || 1)) / 100000;
         const height = (obj.height * (obj.scaleY || 1)) / 100000;
-        
+
         return [[
             [left, top],
             [left, top + height],
@@ -1440,7 +1537,7 @@ class IMDFBuilder {
 
     getDisplayPoint(obj) {
         if (!obj) return { type: 'Point', coordinates: [0, 0] };
-        
+
         return {
             type: 'Point',
             coordinates: [
@@ -1481,3 +1578,21 @@ let app;
 document.addEventListener('DOMContentLoaded', () => {
     app = new IMDFBuilder();
 });
+
+
+/**
+ * Hilfe
+ */
+
+/*const helpText = document.querySelector('.help-text');
+
+helpText.innerHTML = `
+    <p><strong>Anmerkungen</strong></p>
+    <ul>
+        <li>ALT + Linke Maustaste zum bewegen der Karte</li>
+        <li>Mausrad zum zoomen</li>
+        <li>ENTF zum Entfernen eines Elements</li>
+        <li><b>Tipp:</b> Falls die Punkte/Objekte ungenau platziert werden, bitte 'Edge snapping' deaktivieren</li>
+    </ul>
+`;
+*/
