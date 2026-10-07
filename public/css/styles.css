@@ -367,9 +367,21 @@ header h1 {
     line-height: 1.6;
 }
 
-.help-text ol {
+.help-text ol,
+.help-text ul {
     margin-left: 20px;
     margin-top: 10px;
+}
+
+.help-text kbd {
+    display: inline-block;
+    padding: 1px 5px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--surface-2);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.4;
 }
 
 .help-text li {
