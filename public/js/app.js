@@ -125,27 +125,18 @@ class IMDFBuilder {
         this.canvas.on('mouse:move', (e) => this.handleCanvasMove(e));
         this.canvas.on('mouse:dblclick', (e) => this.handleCanvasDblClick(e));
 
-        /**
-         * Mouse Panning and Zoom with Mouse Wheel added
-         * @author Marvin Niermann
-         */
-
+        // ── Panning (ALT + drag) and zoom (mouse wheel) ──────────────
         let isPanning = false;
         let lastPosX = 0;
         let lastPosY = 0;
 
         this.canvas.on('mouse:down', (opt) => {
-
             if (opt.e.altKey) {
-
                 isPanning = true;
-
                 lastPosX = opt.e.clientX;
                 lastPosY = opt.e.clientY;
-
                 this.canvas.selection = false;
             }
-
         });
 
         this.canvas.on('mouse:move', (opt) => {
@@ -164,10 +155,13 @@ class IMDFBuilder {
         });
 
         this.canvas.on('mouse:up', () => {
+            if (!isPanning) return;
             isPanning = false;
+            // Restore rubber-band selection, which panning disabled
+            this.canvas.selection = this.currentTool === 'select';
         });
 
-        // Zoom with Mouse Wheel
+        // Zoom to cursor with the mouse wheel
         this.canvas.on('mouse:wheel', (opt) => {
             const delta = opt.e.deltaY;
 
@@ -202,20 +196,14 @@ class IMDFBuilder {
             opt.e.stopPropagation();
         });
 
-        // Delete selected Object with pressing DELETE Key
         window.addEventListener('keydown', (e) => {
+            // Never hijack keys while the user is typing into a form field
+            const t = e.target;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
 
-            if (e.key === 'Delete') {
-                this.deleteSelected();
-            }
-
-            if (e.key === 'Escape') {
-                this.cancelPolygon();
-            }
-
+            if (e.key === 'Delete') this.deleteSelected();
+            if (e.key === 'Escape') this.cancelPolygon();
         });
-
-        /* End */
 
         // When a polygon vertex handle moves, update the polygon points
         this.canvas.on('object:moving', (e) => {
@@ -311,12 +299,9 @@ class IMDFBuilder {
     handleCanvasClick(event) {
         if (!event.pointer || this.currentTool === 'select') return;
 
-        /**
-         * No placing when moving the Map or while Object is selected
-         */
+        // Don't place anything while panning, or when clicking an existing object
         if (event.e.altKey) return;
-        if (this.selectedObject) return;
-        /* End */
+        if (event.target) return;
 
         // Ignore clicks on vertex handles
         if (event.target && event.target._vertexHandle) return;
@@ -1400,7 +1385,8 @@ class IMDFBuilder {
             const handle = new fabric.Circle({
                 left: polygon.left + pt.x - ox,
                 top: polygon.top + pt.y - oy,
-                radius: Math.max(2, 16 / this.canvas.getZoom()), fill: '#ff5c00',
+                radius: Math.max(2, 6 / this.canvas.getZoom()),
+                fill: '#ff5c00',
                 stroke: '#ffffff',
                 strokeWidth: 2,
                 originX: 'center',
@@ -1579,20 +1565,3 @@ document.addEventListener('DOMContentLoaded', () => {
     app = new IMDFBuilder();
 });
 
-
-/**
- * Hilfe
- */
-
-/*const helpText = document.querySelector('.help-text');
-
-helpText.innerHTML = `
-    <p><strong>Anmerkungen</strong></p>
-    <ul>
-        <li>ALT + Linke Maustaste zum bewegen der Karte</li>
-        <li>Mausrad zum zoomen</li>
-        <li>ENTF zum Entfernen eines Elements</li>
-        <li><b>Tipp:</b> Falls die Punkte/Objekte ungenau platziert werden, bitte 'Edge snapping' deaktivieren</li>
-    </ul>
-`;
-*/

@@ -5,6 +5,7 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
 ## Features
 
 - 🖼️ **Floor Plan Upload**: Upload PDF or image files of your floor plans
+- 🔍 **Pan & Zoom**: ALT + drag to pan, mouse wheel to zoom, with keyboard shortcuts
 - 🏢 **Interactive Editor**: Visual canvas-based editor for placing indoor mapping elements
 - 📍 **IMDF Elements Support**:
   - Units (rooms, offices, conference rooms)
@@ -130,6 +131,17 @@ docker run -d -p 3000:3000 -v $(pwd)/projects:/app/projects -v $(pwd)/uploads:/a
    - **Place Opening**: For doors, entrances
 2. Click on the canvas where you want to place the item
 3. Use "Select Mode" to select and move items
+
+**Canvas controls:**
+
+| Control | Action |
+|---|---|
+| `ALT` + left-drag | Pan the floor plan |
+| Mouse wheel | Zoom in/out at the cursor (0.1x &ndash; 10x) |
+| `DEL` | Delete the selected item |
+| `ESC` | Cancel the polygon currently being drawn |
+
+> Items placed imprecisely? Turn off **Edge snapping** in the toolbar.
 
 ### Step 5: Edit Item Properties
 1. Click "Select Mode" button
