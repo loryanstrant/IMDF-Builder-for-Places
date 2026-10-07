@@ -14,6 +14,15 @@ class IMDFBuilder {
         this.projectId = null;
         this.floorplanImage = null;
 
+        // Georeferencing — canvas pixels to WGS84 (see public/js/geo.js)
+        this.geo = new Georeference({});
+        this.calibrationPoints = [];
+
+        // Multi-page PDF floor plans: the uploaded document, plus the page each
+        // level was traced from.
+        this.pdfSource = null;      // { path, pageCount }
+        this.pendingPageChoice = null;
+
         // Polygon drawing state
         this.polyPoints = [];       // vertices collected so far
         this.polyLines = [];        // preview line objects on canvas
@@ -36,6 +45,7 @@ class IMDFBuilder {
         this.initPdfJs();
         this.initCanvas();
         this.attachEventListeners();
+        this.initGeoControls();
         this.updateCounts();
         this.initTheme();
         this.loadVersion();
@@ -254,9 +264,27 @@ class IMDFBuilder {
             });
         }
 
-        // Modal close
-        document.querySelector('.close').addEventListener('click', () => {
-            document.getElementById('loadProjectModal').style.display = 'none';
+        // Georeferencing controls
+        ['venueCoords', 'geoScale', 'geoRotation'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', () => {
+                this.syncGeoFromInputs();
+                this.updateGeoReadout();
+            });
+        });
+
+        const calibrateBtn = document.getElementById('calibrateScaleBtn');
+        if (calibrateBtn) calibrateBtn.addEventListener('click', () => this.startCalibration());
+
+        const anchorBtn = document.getElementById('setAnchorBtn');
+        if (anchorBtn) anchorBtn.addEventListener('click', () => this.startAnchorPick());
+
+        // Modal close buttons
+        document.querySelectorAll('.close').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const modal = btn.closest('.modal');
+                if (modal) modal.style.display = 'none';
+            });
         });
     }
 
@@ -297,14 +325,22 @@ class IMDFBuilder {
     }
 
     handleCanvasClick(event) {
-        if (!event.pointer || this.currentTool === 'select') return;
+        if (!event.pointer) return;
+        if (event.e.altKey) return; // panning
 
-        // Don't place anything while panning, or when clicking an existing object
-        if (event.e.altKey) return;
-        if (event.target) return;
+        // Georeferencing tools come first: they work before any level exists and
+        // must still fire when the click lands on an existing shape.
+        if (this.currentTool === 'calibrate' || this.currentTool === 'anchor') {
+            const p = this.canvas.getPointer(event.e);
+            if (this.currentTool === 'calibrate') this.handleCalibrationClick(p);
+            else this.handleAnchorClick(p);
+            return;
+        }
 
-        // Ignore clicks on vertex handles
+        if (this.currentTool === 'select') return;
+        if (event.target) return; // clicking an existing object
         if (event.target && event.target._vertexHandle) return;
+
         if (!this.currentLevel) {
             this.showToast('Please add and select a level first', 'error');
             return;
@@ -829,27 +865,38 @@ class IMDFBuilder {
         this.updateCounts();
     }
 
-    addLevel() {
-        const name = document.getElementById('levelName').value || `Level ${this.levels.length}`;
-        const ordinal = parseInt(document.getElementById('levelOrdinal').value) || this.levels.length;
+    addLevel(options) {
+        const opts = options || {};
+        const nameInput = document.getElementById('levelName');
+        const ordinalInput = document.getElementById('levelOrdinal');
+
+        const name = opts.name || nameInput.value || `Level ${this.levels.length}`;
+        const ordinal = Number.isFinite(opts.ordinal)
+            ? opts.ordinal
+            : (parseInt(ordinalInput.value, 10) || this.levels.length);
 
         const level = {
             id: this.generateUUID(),
             name: name,
             ordinal: ordinal,
-            short_name: ordinal.toString()
+            short_name: String(ordinal),
+            outdoor: false,
+            // Levels remember which page of the uploaded plan they were traced
+            // from, so a multi-page PDF can carry a whole building (issue #13).
+            floorplan: opts.floorplan || (this.activePlan ? { ...this.activePlan } : null)
         };
 
         this.levels.push(level);
         this.renderLevelsList();
         this.updateCounts();
 
-        // Auto-select the new level
-        this.selectLevel(level);
+        if (!opts.deferSelect) {
+            this.selectLevel(level);
+        }
 
-        // Clear inputs
-        document.getElementById('levelName').value = '';
-        document.getElementById('levelOrdinal').value = this.levels.length;
+        nameInput.value = '';
+        ordinalInput.value = this.levels.length;
+        return level;
     }
 
     renderLevelsList() {
@@ -875,10 +922,47 @@ class IMDFBuilder {
         });
     }
 
-    selectLevel(level) {
+    async selectLevel(level) {
         this.currentLevel = level;
         this.renderLevelsList();
         this.updateCanvasInfo(`Current Level: ${level.name}`);
+
+        // Each level can be traced from its own page of a multi-page PDF.
+        const plan = level.floorplan;
+        if (plan && plan.path) {
+            const same = this.activePlan &&
+                this.activePlan.path === plan.path &&
+                this.activePlan.page === plan.page;
+            if (!same) {
+                try {
+                    await this.loadFloorplanToCanvas(plan.path, plan.page);
+                    this.activePlan = { path: plan.path, page: plan.page };
+                } catch (err) {
+                    this.showToast('Could not load this level\'s floor plan: ' + err.message, 'error');
+                }
+            }
+        }
+
+        this.applyLevelVisibility();
+    }
+
+    // Show only the items belonging to the current level. With one level (or
+    // none) everything stays visible, so single-floor projects are unaffected.
+    applyLevelVisibility() {
+        const showAll = this.levels.length <= 1 || !this.currentLevel;
+        const currentId = this.currentLevel && this.currentLevel.id;
+
+        this.canvas.getObjects().forEach(obj => {
+            if (!obj.imdfData) return;
+            const visible = showAll || obj.imdfData.levelId === currentId;
+            obj.set({ visible, evented: visible, selectable: visible });
+        });
+
+        if (this.selectedObject && !this.selectedObject.visible) {
+            this.canvas.discardActiveObject();
+            this.clearSelection();
+        }
+        this.canvas.renderAll();
     }
 
     removeLevel(levelId) {
@@ -906,6 +990,7 @@ class IMDFBuilder {
 
         this.renderLevelsList();
         this.updateCounts();
+        this.applyLevelVisibility();
     }
 
     async uploadFloorplan() {
@@ -928,21 +1013,33 @@ class IMDFBuilder {
 
             const result = await this.parseJsonResponse(response);
 
-            if (response.ok && result.success) {
-                this.floorplanImage = result.path;
-                await this.loadFloorplanToCanvas(result.path);
-                this.showToast('Floor plan uploaded successfully!', 'success');
-            } else {
+            if (!response.ok || !result.success) {
                 this.showToast('Upload failed: ' + (result.error || `HTTP ${response.status}`), 'error');
+                return;
+            }
+
+            this.floorplanImage = result.path;
+
+            const pageCount = await this.getPdfPageCount(result.path);
+            this.pdfSource = pageCount > 0 ? { path: result.path, pageCount } : null;
+
+            if (pageCount > 1) {
+                // A multi-page PDF is usually one page per floor.
+                await this.showPdfPageModal();
+            } else {
+                await this.loadFloorplanToCanvas(result.path, 1);
+                this.activePlan = { path: result.path, page: 1 };
+                if (this.currentLevel) this.currentLevel.floorplan = { ...this.activePlan };
+                this.showToast('Floor plan uploaded successfully!', 'success');
             }
         } catch (error) {
             this.showToast('Upload error: ' + error.message, 'error');
         }
     }
 
-    // Parse a fetch response as JSON, tolerating a non-JSON body (e.g. an HTML error
-    // page from a proxy or a crashed server) instead of throwing the confusing
-    // "JSON.parse: unexpected character" error users reported in issue #4.
+    // Parse a fetch response as JSON, tolerating a non-JSON body (e.g. an HTML
+    // error page from a proxy or a crashed server) instead of throwing the
+    // confusing "JSON.parse: unexpected character" error reported in issue #4.
     async parseJsonResponse(response) {
         const text = await response.text();
         try {
@@ -952,8 +1049,100 @@ class IMDFBuilder {
         }
     }
 
-    async loadFloorplanToCanvas(imageUrl) {
-        // A PDF can't be drawn as an <img>; rasterize its first page first (issue #4).
+    // ── Multi-page PDF floor plans (issue #13) ────────────────────
+
+    async getPdfPageCount(url) {
+        if (!/\.pdf($|\?)/i.test(url) || !window.pdfjsLib) return 0;
+        try {
+            const pdf = await pdfjsLib.getDocument(url).promise;
+            return pdf.numPages;
+        } catch {
+            return 0;
+        }
+    }
+
+    async showPdfPageModal() {
+        const modal = document.getElementById('pdfPageModal');
+        const grid = document.getElementById('pdfPageGrid');
+        const summary = document.getElementById('pdfPageSummary');
+        if (!modal || !grid) {
+            // No modal in the DOM — fall back to page 1 rather than failing.
+            await this.loadFloorplanToCanvas(this.pdfSource.path, 1);
+            this.activePlan = { path: this.pdfSource.path, page: 1 };
+            return;
+        }
+
+        const { path, pageCount } = this.pdfSource;
+        summary.textContent = `This PDF has ${pageCount} pages. Pick the page for the current level, or create one level per page.`;
+        grid.innerHTML = '<p class="hint">Rendering previews…</p>';
+        modal.style.display = 'block';
+
+        const thumbs = [];
+        for (let page = 1; page <= pageCount; page++) {
+            thumbs.push(await this.renderPdfToDataUrl(path, page, 0.35));
+        }
+
+        grid.innerHTML = '';
+        thumbs.forEach((src, i) => {
+            const page = i + 1;
+            const card = document.createElement('div');
+            card.className = 'pdf-page-card';
+            const img = document.createElement('img');
+            img.src = src;
+            img.alt = `Page ${page}`;
+            const label = document.createElement('span');
+            label.textContent = `Page ${page}`;
+            card.appendChild(img);
+            card.appendChild(label);
+            card.addEventListener('click', async () => {
+                await this.usePdfPage(page);
+                modal.style.display = 'none';
+            });
+            grid.appendChild(card);
+        });
+
+        const bulkBtn = document.getElementById('pdfCreateLevelsBtn');
+        if (bulkBtn) {
+            bulkBtn.onclick = async () => {
+                await this.createLevelPerPdfPage();
+                modal.style.display = 'none';
+            };
+        }
+    }
+
+    async usePdfPage(page) {
+        const { path } = this.pdfSource;
+        await this.loadFloorplanToCanvas(path, page);
+        this.activePlan = { path, page };
+        if (this.currentLevel) {
+            this.currentLevel.floorplan = { ...this.activePlan };
+        }
+        this.showToast(`Using page ${page} of the PDF`, 'success');
+    }
+
+    async createLevelPerPdfPage() {
+        const { path, pageCount } = this.pdfSource;
+        const base = this.levels.length;
+
+        for (let page = 1; page <= pageCount; page++) {
+            const ordinal = base + page - 1;
+            this.addLevel({
+                name: `Level ${ordinal}`,
+                ordinal,
+                floorplan: { path, page },
+                deferSelect: true
+            });
+        }
+
+        this.renderLevelsList();
+        await this.selectLevel(this.levels[base]);
+        this.updateCounts();
+        this.showToast(`Created ${pageCount} levels, one per PDF page`, 'success');
+    }
+
+    async loadFloorplanToCanvas(imageUrl, page) {
+        // A PDF can't be drawn as an <img>; rasterize the requested page first
+        // (issue #4 for PDFs at all, issue #13 for pages beyond the first).
         const isPdf = /\.pdf($|\?)/i.test(imageUrl);
         const isSvg = /\.svg($|\?)/i.test(imageUrl);
 
@@ -962,7 +1151,9 @@ class IMDFBuilder {
             return;
         }
 
-        const sourceUrl = isPdf ? await this.renderPdfToDataUrl(imageUrl) : imageUrl;
+        const sourceUrl = isPdf
+            ? await this.renderPdfToDataUrl(imageUrl, page || 1)
+            : imageUrl;
 
         // Fabric v6 returns a Promise from fromURL (the old callback form is gone).
         const img = await fabric.Image.fromURL(sourceUrl);
@@ -979,23 +1170,23 @@ class IMDFBuilder {
         this.canvas.renderAll();
     }
 
-    async renderPdfToDataUrl(pdfUrl) {
+    async renderPdfToDataUrl(pdfUrl, pageNumber, scale) {
         if (!window.pdfjsLib) {
             throw new Error('PDF support failed to load. Please refresh and try again.');
         }
         const pdf = await pdfjsLib.getDocument(pdfUrl).promise;
-        const page = await pdf.getPage(1); // first page becomes the floor plan
-        // Render at 2x so the background stays crisp when zoomed in.
-        const viewport = page.getViewport({ scale: 2 });
+        const page = Math.min(Math.max(parseInt(pageNumber, 10) || 1, 1), pdf.numPages);
+        const pdfPage = await pdf.getPage(page);
+        // Render at 2x so the background stays crisp when zoomed in; thumbnails
+        // pass a smaller scale.
+        const viewport = pdfPage.getViewport({ scale: scale || 2 });
         const tmpCanvas = document.createElement('canvas');
         tmpCanvas.width = viewport.width;
         tmpCanvas.height = viewport.height;
-        await page.render({ canvasContext: tmpCanvas.getContext('2d'), viewport }).promise;
+        await pdfPage.render({ canvasContext: tmpCanvas.getContext('2d'), viewport }).promise;
         return tmpCanvas.toDataURL('image/png');
     }
 
-    // Re-scale and re-centre the background image to fill 90% of the current
-    // canvas size.  Called after every resize so the floor plan tracks the window.
     refitBackground() {
         const bg = this.canvas.backgroundImage;
         if (!bg) return;
@@ -1063,58 +1254,106 @@ class IMDFBuilder {
         this.canvas.renderAll();
     }
 
-    async saveProject() {
+    // Everything needed to rebuild the project: the IMDF coordinates for export
+    // AND the canvas geometry for redrawing (issue #12).
+    collectProjectData() {
+        this.syncGeoFromInputs();
         const projectName = document.getElementById('projectName').value || 'Untitled Project';
 
-        const projectData = {
+        return {
+            schemaVersion: IMDFBuilder.SCHEMA_VERSION,
             projectName: projectName,
+            georeference: this.geo.toJSON(),
             venue: {
                 name: projectName,
-                coordinates: this.parseCoordinates(document.getElementById('venueCoords').value)
+                category: 'businesscampus',
+                coordinates: [this.geo.lon, this.geo.lat]
             },
             building: {
-                name: document.getElementById('buildingName').value || 'Building',
-                coordinates: this.getBuildingCoordinates()
+                name: document.getElementById('buildingName').value || 'Building'
             },
+            address: this.collectAddress(),
             levels: this.levels.map(l => ({
                 id: l.id,
                 name: l.name,
                 ordinal: l.ordinal,
                 short_name: l.short_name,
-                coordinates: this.getLevelCoordinates()
+                outdoor: !!l.outdoor,
+                floorplan: l.floorplan || null
             })),
             units: this.units.map(u => ({
                 id: u.id,
+                type: 'unit',
                 name: u.name,
                 category: u.category,
                 restriction: u.restriction,
+                exchangeId: u.exchangeId || '',
                 levelId: u.levelId,
+                canvas: this.captureCanvasState(u.fabricObject),
                 coordinates: this.getObjectCoordinates(u.fabricObject),
                 display_point: this.getDisplayPoint(u.fabricObject)
             })),
             amenities: this.amenities.map(a => ({
                 id: a.id,
+                type: 'amenity',
                 name: a.name,
                 category: a.category,
                 levelId: a.levelId,
+                canvas: this.captureCanvasState(a.fabricObject),
                 coordinates: this.getPointCoordinates(a.fabricObject)
             })),
             fixtures: this.fixtures.map(f => ({
                 id: f.id,
+                type: 'fixture',
                 category: f.category,
                 levelId: f.levelId,
-                geometryType: 'LineString',
+                canvas: this.captureCanvasState(f.fabricObject),
                 coordinates: this.getLineCoordinates(f.fabricObject)
             })),
             openings: this.openings.map(o => ({
                 id: o.id,
+                type: 'opening',
                 category: o.category,
+                door: o.door || 'yes',
                 levelId: o.levelId,
+                canvas: this.captureCanvasState(o.fabricObject),
                 coordinates: this.getLineCoordinates(o.fabricObject)
             })),
             floorplanImage: this.floorplanImage,
             createdAt: new Date().toISOString()
         };
+    }
+
+    collectAddress() {
+        const val = id => {
+            const el = document.getElementById(id);
+            return el && el.value.trim() ? el.value.trim() : null;
+        };
+        const address = {
+            address: val('addrStreet'),
+            locality: val('addrLocality'),
+            province: val('addrProvince'),
+            country: val('addrCountry'),
+            postal_code: val('addrPostcode')
+        };
+        return Object.values(address).some(Boolean) ? address : null;
+    }
+
+    applyAddress(address) {
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.value = value || '';
+        };
+        const a = address || {};
+        set('addrStreet', a.address);
+        set('addrLocality', a.locality);
+        set('addrProvince', a.province);
+        set('addrCountry', a.country);
+        set('addrPostcode', a.postal_code);
+    }
+
+    async saveProject() {
+        const projectData = this.collectProjectData();
 
         try {
             const response = await fetch('/api/projects/save', {
@@ -1122,18 +1361,18 @@ class IMDFBuilder {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     projectId: this.projectId,
-                    projectName: projectName,
+                    projectName: projectData.projectName,
                     projectData: projectData
                 })
             });
 
-            const result = await response.json();
+            const result = await this.parseJsonResponse(response);
 
-            if (result.success) {
+            if (response.ok && result.success) {
                 this.projectId = result.projectId;
                 this.showToast('Project saved successfully!', 'success');
             } else {
-                this.showToast('Save failed: ' + result.error, 'error');
+                this.showToast('Save failed: ' + (result.error || `HTTP ${response.status}`), 'error');
             }
         } catch (error) {
             this.showToast('Save error: ' + error.message, 'error');
@@ -1155,9 +1394,12 @@ class IMDFBuilder {
                     const item = document.createElement('div');
                     item.className = 'project-item';
                     item.innerHTML = `
-                        <h3>${project.name}</h3>
-                        <p>Updated: ${new Date(project.updatedAt).toLocaleString()}</p>
+                        <h3></h3>
+                        <p>Updated: </p>
                     `;
+                    item.querySelector('h3').textContent = project.name || 'Untitled Project';
+                    item.querySelector('p').textContent =
+                        'Updated: ' + new Date(project.updatedAt).toLocaleString();
                     item.addEventListener('click', () => this.loadProject(project.id));
                     list.appendChild(item);
                 });
@@ -1169,12 +1411,96 @@ class IMDFBuilder {
         }
     }
 
+    // Rebuild a Fabric object from the canvas state stored at save time.
+    // Falls back to re-projecting the IMDF coordinates for pre-v2 projects, and
+    // only then to a placeholder.
+    rebuildFabricObject(item, kind) {
+        const state = item.canvas;
+        const styles = {
+            unit: { fill: 'rgba(0, 120, 212, 0.3)', stroke: '#0078d4', strokeWidth: 2 },
+            amenity: { fill: 'rgba(40, 167, 69, 0.5)', stroke: '#28a745', strokeWidth: 2 },
+            fixture: { stroke: '#6c757d', strokeWidth: 3 },
+            opening: { stroke: '#dc3545', strokeWidth: 4 }
+        };
+        const style = styles[kind] || styles.unit;
+
+        const common = state ? {
+            left: state.left,
+            top: state.top,
+            angle: state.angle || 0,
+            scaleX: state.scaleX || 1,
+            scaleY: state.scaleY || 1
+        } : {};
+
+        if (kind === 'unit') {
+            if (state && state.type === 'polygon' && state.points && state.points.length >= 3) {
+                return new fabric.Polygon(state.points.map(p => ({ x: p.x, y: p.y })), {
+                    ...style, ...common, objectCaching: false
+                });
+            }
+            if (state && state.type === 'rect') {
+                return new fabric.Rect({ ...style, ...common, width: state.width, height: state.height });
+            }
+            // Pre-v2 project: re-project the stored lon/lat ring back to canvas.
+            const ring = item.coordinates && item.coordinates[0];
+            if (ring && ring.length >= 3) {
+                const points = ring.slice(0, -1).map(([lon, lat]) => this.geo.toCanvas(lon, lat));
+                if (points.length >= 3) {
+                    return new fabric.Polygon(points, { ...style, objectCaching: false });
+                }
+            }
+            return new fabric.Rect({ ...style, left: 100, top: 100, width: 100, height: 100 });
+        }
+
+        if (kind === 'amenity') {
+            const radius = (state && state.radius) || Math.max(2, 15 / this.canvas.getZoom());
+            if (state) {
+                return new fabric.Circle({ ...style, ...common, radius });
+            }
+            const c = item.coordinates
+                ? this.geo.toCanvas(item.coordinates[0], item.coordinates[1])
+                : { x: 200, y: 200 };
+            return new fabric.Circle({ ...style, left: c.x, top: c.y, radius });
+        }
+
+        // Fixtures and openings are lines. These were never restored at all
+        // before — the load path simply had no loop for them (issue #12).
+        let x1, y1, x2, y2;
+        if (state && state.x1 !== undefined) {
+            x1 = state.x1; y1 = state.y1; x2 = state.x2; y2 = state.y2;
+        } else if (item.coordinates && item.coordinates.length >= 2) {
+            const a = this.geo.toCanvas(item.coordinates[0][0], item.coordinates[0][1]);
+            const b = this.geo.toCanvas(item.coordinates[1][0], item.coordinates[1][1]);
+            x1 = a.x; y1 = a.y; x2 = b.x; y2 = b.y;
+        } else {
+            x1 = 100; y1 = 100; x2 = 150; y2 = 100;
+        }
+        return new fabric.Line([x1, y1, x2, y2], style);
+    }
+
+    restoreCollection(items, kind, target) {
+        (items || []).forEach(item => {
+            const obj = this.rebuildFabricObject(item, kind);
+            const record = { ...item, type: kind, fabricObject: obj };
+            delete record.canvas;
+            obj.imdfData = record;
+            target.push(record);
+            this.canvas.add(obj);
+        });
+    }
+
     async loadProject(projectId) {
         try {
             const response = await fetch(`/api/projects/${projectId}`);
-            const project = await response.json();
+            const project = await this.parseJsonResponse(response);
+            if (!response.ok) {
+                throw new Error(project.error || `HTTP ${response.status}`);
+            }
+
+            const data = project.data || {};
 
             // Clear current state
+            this.removeVertexHandles();
             this.canvas.clear();
             this.levels = [];
             this.units = [];
@@ -1183,75 +1509,63 @@ class IMDFBuilder {
             this.openings = [];
             this.currentLevel = null;
 
-            // Load project data
             this.projectId = project.id;
-            document.getElementById('projectName').value = project.name;
+            document.getElementById('projectName').value = project.name || '';
+            document.getElementById('buildingName').value =
+                (data.building && data.building.name) || 'Building';
 
-            const data = project.data;
-
-            if (data.venue) {
-                document.getElementById('venueCoords').value = data.venue.coordinates.join(', ');
+            // Georeferencing. Pre-v2 projects only stored a venue point, so seed
+            // the anchor from that and leave the scale uncalibrated.
+            if (data.georeference) {
+                this.geo = new Georeference(data.georeference);
+            } else if (data.venue && Array.isArray(data.venue.coordinates)) {
+                this.geo = new Georeference({
+                    lon: data.venue.coordinates[0],
+                    lat: data.venue.coordinates[1]
+                });
+            } else {
+                this.geo = new Georeference({});
             }
+            this.applyGeoToInputs();
+            this.applyAddress(data.address);
 
-            if (data.building) {
-                document.getElementById('buildingName').value = data.building.name;
-            }
-
-            // Load floor plan if exists
-            if (data.floorplanImage) {
-                this.floorplanImage = data.floorplanImage;
-                await this.loadFloorplanToCanvas(data.floorplanImage);
-            }
-
-            // Load levels
-            if (data.levels) {
-                this.levels = data.levels;
-                this.renderLevelsList();
-                if (this.levels.length > 0) {
-                    this.selectLevel(this.levels[0]);
+            // Floor plan
+            this.floorplanImage = data.floorplanImage || null;
+            if (this.floorplanImage) {
+                try {
+                    await this.loadFloorplanToCanvas(this.floorplanImage);
+                } catch (err) {
+                    this.showToast('Floor plan could not be reloaded: ' + err.message, 'error');
                 }
             }
 
-            // Load units
-            if (data.units) {
-                data.units.forEach(unitData => {
-                    const rect = new fabric.Rect({
-                        left: 100,
-                        top: 100,
-                        width: 100,
-                        height: 100,
-                        fill: 'rgba(0, 120, 212, 0.3)',
-                        stroke: '#0078d4',
-                        strokeWidth: 2
-                    });
-                    unitData.fabricObject = rect;
-                    rect.imdfData = unitData;
-                    this.units.push(unitData);
-                    this.canvas.add(rect);
-                });
-            }
+            // Levels
+            this.levels = (data.levels || []).map(l => ({ ...l }));
 
-            // Load amenities
-            if (data.amenities) {
-                data.amenities.forEach(amenityData => {
-                    const circle = new fabric.Circle({
-                        left: 200,
-                        top: 200,
-                        radius: Math.max(2, 15 / this.canvas.getZoom()),
-                        fill: 'rgba(40, 167, 69, 0.5)',
-                        stroke: '#28a745',
-                        strokeWidth: 2
-                    });
-                    amenityData.fabricObject = circle;
-                    circle.imdfData = amenityData;
-                    this.amenities.push(amenityData);
-                    this.canvas.add(circle);
-                });
+            // Items — order matters only for the counts, but all four types must
+            // be restored. The old code dropped fixtures and openings entirely
+            // and rebuilt every unit as a 100x100 box at (100, 100).
+            this.restoreCollection(data.units, 'unit', this.units);
+            this.restoreCollection(data.amenities, 'amenity', this.amenities);
+            this.restoreCollection(data.fixtures, 'fixture', this.fixtures);
+            this.restoreCollection(data.openings, 'opening', this.openings);
+
+            this.renderLevelsList();
+            if (this.levels.length > 0) {
+                // Select the level last, so its visibility filter applies to the
+                // items that were just added.
+                await this.selectLevel(this.levels[0]);
+            } else {
+                this.applyLevelVisibility();
             }
 
             this.updateCounts();
+            this.canvas.renderAll();
             document.getElementById('loadProjectModal').style.display = 'none';
-            this.showToast('Project loaded successfully!', 'success');
+
+            const restored = this.units.length + this.amenities.length +
+                this.fixtures.length + this.openings.length;
+            this.showToast(`Project loaded — ${restored} item${restored === 1 ? '' : 's'} restored`, 'success');
         } catch (error) {
             this.showToast('Error loading project: ' + error.message, 'error');
         }
@@ -1259,7 +1573,9 @@ class IMDFBuilder {
 
     newProject() {
         if (confirm('Start a new project? Any unsaved changes will be lost.')) {
+            this.removeVertexHandles();
             this.canvas.clear();
+            this.canvas.backgroundImage = null;
             this.levels = [];
             this.units = [];
             this.amenities = [];
@@ -1268,69 +1584,75 @@ class IMDFBuilder {
             this.currentLevel = null;
             this.projectId = null;
             this.floorplanImage = null;
+            this.pdfSource = null;
+            this.geo = new Georeference({});
 
             document.getElementById('projectName').value = '';
             document.getElementById('buildingName').value = '';
-            document.getElementById('venueCoords').value = '0, 0';
+            this.applyGeoToInputs();
+            this.applyAddress(null);
 
             this.renderLevelsList();
             this.updateCounts();
             this.clearSelection();
+            this.canvas.renderAll();
             this.showToast('New project started', 'info');
         }
     }
 
+    // Warn about anything that would make Microsoft Places reject the upload.
+    exportWarnings() {
+        const warnings = [];
+        if (!this.geo.calibrated) {
+            warnings.push('the plan scale has not been calibrated, so room sizes will be wrong');
+        }
+        if (this.geo.lat === 0 && this.geo.lon === 0) {
+            warnings.push('the venue anchor is still 0, 0');
+        }
+        if (this.levels.length === 0) {
+            warnings.push('there are no levels');
+        }
+        if (this.units.length === 0) {
+            warnings.push('there are no units/rooms');
+        }
+        const orphans = this.units.filter(u => !this.levels.some(l => l.id === u.levelId)).length;
+        if (orphans > 0) {
+            warnings.push(`${orphans} unit${orphans === 1 ? '' : 's'} reference a level that no longer exists`);
+        }
+        return warnings;
+    }
+
     async exportIMDF() {
-        const projectName = document.getElementById('projectName').value || 'Untitled Project';
+        const warnings = this.exportWarnings();
+        if (warnings.length > 0) {
+            const proceed = confirm(
+                'This export may be rejected by Microsoft Places because:\n\n  • ' +
+                warnings.join('\n  • ') +
+                '\n\nExport anyway?'
+            );
+            if (!proceed) return;
+        }
+
+        const saved = this.collectProjectData();
 
         const projectData = {
+            language: 'en',
             venue: {
                 id: this.generateUUID(),
-                name: projectName,
-                coordinates: this.parseCoordinates(document.getElementById('venueCoords').value)
+                name: saved.projectName,
+                category: 'businesscampus',
+                coordinates: saved.venue.coordinates
             },
             building: {
                 id: this.generateUUID(),
-                name: document.getElementById('buildingName').value || 'Building',
-                coordinates: this.getBuildingCoordinates()
+                name: saved.building.name
             },
-            levels: this.levels.map(l => ({
-                id: l.id,
-                name: l.name,
-                ordinal: l.ordinal,
-                short_name: l.short_name,
-                coordinates: this.getLevelCoordinates()
-            })),
-            units: this.units.map(u => ({
-                id: u.id,
-                name: u.name,
-                category: u.category,
-                restriction: u.restriction,
-                exchangeId: u.exchangeId || '',
-                levelId: u.levelId,
-                coordinates: this.getObjectCoordinates(u.fabricObject),
-                display_point: this.getDisplayPoint(u.fabricObject)
-            })),
-            amenities: this.amenities.map(a => ({
-                id: a.id,
-                name: a.name,
-                category: a.category,
-                levelId: a.levelId,
-                coordinates: this.getPointCoordinates(a.fabricObject)
-            })),
-            fixtures: this.fixtures.map(f => ({
-                id: f.id,
-                category: f.category,
-                levelId: f.levelId,
-                geometryType: 'LineString',
-                coordinates: this.getLineCoordinates(f.fabricObject)
-            })),
-            openings: this.openings.map(o => ({
-                id: o.id,
-                category: o.category,
-                levelId: o.levelId,
-                coordinates: this.getLineCoordinates(o.fabricObject)
-            })),
+            address: saved.address,
+            levels: saved.levels,
+            units: saved.units.filter(u => u.coordinates),
+            amenities: saved.amenities.filter(a => a.coordinates),
+            fixtures: saved.fixtures.filter(f => f.coordinates),
+            openings: saved.openings.filter(o => o.coordinates),
             anchors: []
         };
 
@@ -1353,7 +1675,8 @@ class IMDFBuilder {
                 document.body.removeChild(a);
                 this.showToast('IMDF files exported successfully!', 'success');
             } else {
-                this.showToast('Export failed', 'error');
+                const result = await this.parseJsonResponse(response);
+                this.showToast('Export failed: ' + (result.error || `HTTP ${response.status}`), 'error');
             }
         } catch (error) {
             this.showToast('Export error: ' + error.message, 'error');
@@ -1468,6 +1791,145 @@ class IMDFBuilder {
         toast.addEventListener('click', dismiss);
     }
 
+    // ── Georeferencing controls ───────────────────────────────────
+
+    initGeoControls() {
+        this.applyGeoToInputs();
+    }
+
+    applyGeoToInputs() {
+        const set = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.value = value;
+        };
+        set('venueCoords', `${this.geo.lat}, ${this.geo.lon}`);
+        set('geoScale', this.geo.metresPerPixel.toFixed(4));
+        set('geoRotation', this.geo.rotation);
+        this.updateGeoReadout();
+    }
+
+    syncGeoFromInputs() {
+        const coordsEl = document.getElementById('venueCoords');
+        if (coordsEl) {
+            const parsed = this.parseCoordinates(coordsEl.value);
+            if (parsed) {
+                this.geo.lat = parsed.lat;
+                this.geo.lon = parsed.lon;
+            }
+        }
+
+        const scaleEl = document.getElementById('geoScale');
+        if (scaleEl) {
+            const scale = parseFloat(scaleEl.value);
+            if (isFinite(scale) && scale > 0) this.geo.metresPerPixel = scale;
+        }
+
+        const rotEl = document.getElementById('geoRotation');
+        if (rotEl) {
+            const rot = parseFloat(rotEl.value);
+            if (isFinite(rot)) this.geo.rotation = rot;
+        }
+
+        // The anchor defaults to the centre of the floor plan, which is where
+        // the venue coordinate is assumed to sit until the user picks a point.
+        if (!this.geo.anchorX && !this.geo.anchorY) {
+            this.geo.anchorX = this.canvas.width / 2;
+            this.geo.anchorY = this.canvas.height / 2;
+        }
+    }
+
+    updateGeoReadout() {
+        const el = document.getElementById('geoReadout');
+        if (!el) return;
+        const scale = this.geo.metresPerPixel;
+        el.textContent = this.geo.calibrated
+            ? `● Calibrated — 1 px = ${scale.toFixed(4)} m`
+            : `○ Not calibrated — assuming 1 px = ${scale.toFixed(4)} m`;
+        el.classList.toggle('geo-ok', this.geo.calibrated);
+    }
+
+    startCalibration() {
+        this.calibrationPoints = [];
+        this.clearCalibrationMarkers();
+        this.setTool('calibrate');
+        this.showDrawingHint('Calibrate scale: click two points a known distance apart on the plan.');
+        this.showToast('Click the first of two points whose real distance you know', 'info');
+    }
+
+    handleCalibrationClick(pointer) {
+        this.calibrationPoints.push({ x: pointer.x, y: pointer.y });
+        this.addCalibrationMarker(pointer);
+
+        if (this.calibrationPoints.length < 2) {
+            this.showDrawingHint('Now click the second point.');
+            return;
+        }
+
+        const [p1, p2] = this.calibrationPoints;
+        const answer = prompt('How far apart are those two points, in metres?', '10');
+        this.calibrationPoints = [];
+        this.clearCalibrationMarkers();
+        this.setTool('select');
+
+        const metres = parseFloat(answer);
+        if (!isFinite(metres) || metres <= 0) {
+            this.showToast('Calibration cancelled', 'info');
+            return;
+        }
+
+        try {
+            this.geo.calibrateFromPoints(p1, p2, metres);
+            this.applyGeoToInputs();
+            this.showToast(`Scale set: 1 px = ${this.geo.metresPerPixel.toFixed(4)} m`, 'success');
+        } catch (error) {
+            this.showToast(error.message, 'error');
+        }
+    }
+
+    startAnchorPick() {
+        this.setTool('anchor');
+        this.showDrawingHint('Click the point on the plan that matches the venue latitude/longitude.');
+        this.showToast('Click the point matching your venue coordinates', 'info');
+    }
+
+    handleAnchorClick(pointer) {
+        this.syncGeoFromInputs();
+        this.geo.anchorX = pointer.x;
+        this.geo.anchorY = pointer.y;
+        this.setTool('select');
+        this.clearCalibrationMarkers();
+        this.addCalibrationMarker(pointer, '#0078d4', true);
+        this.showToast(`Anchor set to ${this.geo.lat}, ${this.geo.lon}`, 'success');
+        this.updateGeoReadout();
+    }
+
+    addCalibrationMarker(pointer, colour, persist) {
+        const marker = new fabric.Circle({
+            left: pointer.x,
+            top: pointer.y,
+            radius: Math.max(3, 7 / this.canvas.getZoom()),
+            fill: colour || '#ff5c00',
+            stroke: '#fff',
+            strokeWidth: 1.5,
+            originX: 'center',
+            originY: 'center',
+            selectable: false,
+            evented: false,
+            excludeFromExport: true
+        });
+        marker._calibrationMarker = true;
+        marker._persistentMarker = !!persist;
+        this.canvas.add(marker);
+        this.canvas.renderAll();
+    }
+
+    clearCalibrationMarkers(includePersistent) {
+        this.canvas.getObjects()
+            .filter(o => o._calibrationMarker && (includePersistent || !o._persistentMarker))
+            .forEach(o => this.canvas.remove(o));
+        this.canvas.renderAll();
+    }
+
     // ── UUID generator ───────────────────────────────────────────
     generateUUID() {
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -1478,72 +1940,125 @@ class IMDFBuilder {
     }
 
     parseCoordinates(str) {
-        const parts = str.split(',').map(s => parseFloat(s.trim()));
-        return parts.length === 2 ? parts : [0, 0];
+        // The field is typed "lat, lon" (the order people read off a map), but
+        // GeoJSON wants [lon, lat].
+        const parts = String(str || '').split(',').map(v => parseFloat(v.trim()));
+        if (parts.length !== 2 || !isFinite(parts[0]) || !isFinite(parts[1])) return null;
+        return { lat: parts[0], lon: parts[1] };
     }
 
-    getBuildingCoordinates() {
-        // Return a simple polygon for the building footprint
-        return [[[0, 0], [0, 0.001], [0.001, 0.001], [0.001, 0], [0, 0]]];
+    // ── Canvas geometry -> WGS84 ──────────────────────────────────
+    // Every exported coordinate goes through this.geo, so the output lands on
+    // the real site instead of near [0, 0] off the coast of Africa.
+
+    // Absolute canvas-space vertices of a Fabric polygon, honouring any move,
+    // scale or rotation applied after it was drawn.
+    polygonCanvasPoints(obj) {
+        if (!obj || !obj.points) return [];
+        const matrix = obj.calcTransformMatrix();
+        const ox = obj.pathOffset ? obj.pathOffset.x : 0;
+        const oy = obj.pathOffset ? obj.pathOffset.y : 0;
+        return obj.points.map(p => {
+            const t = fabric.util.transformPoint(
+                new fabric.Point(p.x - ox, p.y - oy),
+                matrix
+            );
+            return { x: t.x, y: t.y };
+        });
     }
 
-    getLevelCoordinates() {
-        // Return a simple polygon for the level
-        return [[[0, 0], [0, 0.001], [0.001, 0.001], [0.001, 0], [0, 0]]];
+    // Absolute canvas-space corners of a Fabric rectangle.
+    rectCanvasPoints(obj) {
+        const c = obj.aCoords || obj.calcACoords();
+        return [c.tl, c.tr, c.br, c.bl].map(p => ({ x: p.x, y: p.y }));
     }
 
-    getObjectCoordinates(obj) {
-        if (!obj) return [[[0, 0], [0, 0.0001], [0.0001, 0.0001], [0.0001, 0], [0, 0]]];
-
-        // Fabric Polygon — export its actual vertices
-        if (obj.type === 'polygon' && obj.points) {
-            const coords = obj.points.map(p => [
-                (obj.left + p.x - (obj.pathOffset ? obj.pathOffset.x : 0)) / 100000,
-                (obj.top + p.y - (obj.pathOffset ? obj.pathOffset.y : 0)) / 100000
-            ]);
-            // Close the ring
-            if (coords.length > 0) coords.push(coords[0]);
-            return [coords];
+    // Absolute canvas-space endpoints of a Fabric line. obj.x1/y1 are local and
+    // stale once the line has been dragged, so go through the transform matrix.
+    lineCanvasPoints(obj) {
+        if (!obj) return [];
+        if (typeof obj.calcLinePoints === 'function') {
+            const local = obj.calcLinePoints();
+            const matrix = obj.calcTransformMatrix();
+            const a = fabric.util.transformPoint(new fabric.Point(local.x1, local.y1), matrix);
+            const b = fabric.util.transformPoint(new fabric.Point(local.x2, local.y2), matrix);
+            return [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
         }
+        return [{ x: obj.x1, y: obj.y1 }, { x: obj.x2, y: obj.y2 }];
+    }
 
-        // Fabric Rect (legacy rectangle units)
-        const left = obj.left / 100000;
-        const top = obj.top / 100000;
-        const width = (obj.width * (obj.scaleX || 1)) / 100000;
-        const height = (obj.height * (obj.scaleY || 1)) / 100000;
+    centreCanvasPoint(obj) {
+        if (!obj) return { x: 0, y: 0 };
+        const c = obj.getCenterPoint ? obj.getCenterPoint() : { x: obj.left, y: obj.top };
+        return { x: c.x, y: c.y };
+    }
 
-        return [[
-            [left, top],
-            [left, top + height],
-            [left + width, top + height],
-            [left + width, top],
-            [left, top]
-        ]];
+    canvasPointsToRing(points) {
+        if (!points || points.length < 3) return null;
+        const ring = points.map(p => this.geo.toLonLat(p.x, p.y));
+        return window.geoUtils.toCounterClockwise(ring);
+    }
+
+    // Outer ring of a unit, as [[lon, lat], ...]. Returns null when the object
+    // has no usable geometry rather than inventing a placeholder square.
+    getObjectCoordinates(obj) {
+        if (!obj) return null;
+        const points = obj.type === 'polygon'
+            ? this.polygonCanvasPoints(obj)
+            : this.rectCanvasPoints(obj);
+        const ring = this.canvasPointsToRing(points);
+        return ring ? [ring] : null;
     }
 
     getDisplayPoint(obj) {
-        if (!obj) return { type: 'Point', coordinates: [0, 0] };
-
-        return {
-            type: 'Point',
-            coordinates: [
-                (obj.left + (obj.width * obj.scaleX) / 2) / 100000,
-                (obj.top + (obj.height * obj.scaleY) / 2) / 100000
-            ]
-        };
+        if (!obj) return null;
+        const c = this.centreCanvasPoint(obj);
+        return { type: 'Point', coordinates: this.geo.toLonLat(c.x, c.y) };
     }
 
     getPointCoordinates(obj) {
-        if (!obj) return [0, 0];
-        return [obj.left / 100000, obj.top / 100000];
+        if (!obj) return null;
+        const c = this.centreCanvasPoint(obj);
+        return this.geo.toLonLat(c.x, c.y);
     }
 
     getLineCoordinates(obj) {
-        if (!obj) return [[0, 0], [0, 0.0001]];
-        return [
-            [obj.x1 / 100000, obj.y1 / 100000],
-            [obj.x2 / 100000, obj.y2 / 100000]
-        ];
+        const points = this.lineCanvasPoints(obj);
+        if (points.length < 2) return null;
+        return points.map(p => this.geo.toLonLat(p.x, p.y));
+    }
+
+    // ── Canvas state for save/load ────────────────────────────────
+    // Issue #12: saved projects only kept the projected IMDF coordinates, which
+    // are not enough to put a shape back on the canvas. This block is.
+    captureCanvasState(obj) {
+        if (!obj) return null;
+        const base = {
+            type: obj.type,
+            left: obj.left,
+            top: obj.top,
+            angle: obj.angle || 0,
+            scaleX: obj.scaleX || 1,
+            scaleY: obj.scaleY || 1,
+            originX: obj.originX,
+            originY: obj.originY
+        };
+
+        if (obj.type === 'polygon' && obj.points) {
+            base.points = obj.points.map(p => ({ x: p.x, y: p.y }));
+            base.pathOffset = obj.pathOffset ? { x: obj.pathOffset.x, y: obj.pathOffset.y } : null;
+        } else if (obj.type === 'line') {
+            const pts = this.lineCanvasPoints(obj);
+            base.x1 = pts[0].x; base.y1 = pts[0].y;
+            base.x2 = pts[1].x; base.y2 = pts[1].y;
+        } else if (obj.type === 'circle') {
+            base.radius = obj.radius;
+        } else {
+            base.width = obj.width;
+            base.height = obj.height;
+        }
+
+        return base;
     }
 
     updateCounts() {
@@ -1558,6 +2073,11 @@ class IMDFBuilder {
         document.getElementById('canvasInfo').textContent = text;
     }
 }
+
+// Saved-project schema. v1 stored only projected IMDF coordinates, which were
+// not enough to redraw anything (issue #12); v2 also stores canvas geometry
+// and the georeference.
+IMDFBuilder.SCHEMA_VERSION = 2;
 
 // Initialize the application
 let app;

@@ -650,3 +650,76 @@ header h1 {
     header h1   { font-size: 18px; }
     .subtitle   { display: none; }
 }
+
+/* ── Georeferencing panel ─────────────────────────────────────── */
+
+.geo-readout {
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* Status is carried by the leading shape and the words, never by colour alone. */
+.geo-readout.geo-ok {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.field-hint {
+    display: block;
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+/* ── Multi-page PDF picker ────────────────────────────────────── */
+
+.modal-wide {
+    max-width: 900px;
+    width: 90%;
+}
+
+.pdf-page-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 12px;
+    margin: 16px 0;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.pdf-page-card {
+    border: 2px solid var(--border);
+    border-radius: 6px;
+    padding: 6px;
+    cursor: pointer;
+    text-align: center;
+    background: var(--surface);
+    transition: border-color 0.15s ease;
+}
+
+.pdf-page-card:hover,
+.pdf-page-card:focus-within {
+    border-color: var(--accent);
+}
+
+.pdf-page-card img {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: #ffffff;
+    border: 1px solid var(--border-faint);
+}
+
+.pdf-page-card span {
+    display: block;
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
