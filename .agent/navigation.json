@@ -1,0 +1,517 @@
+{
+  "schema_version": "1.0",
+  "repository": "IMDF-Builder-for-Places",
+  "identity": {
+    "description": "A user-friendly web application to create Indoor Mapping Data Format (IMDF) files for use with Microsoft Places. This tool provides a graphical interface for non-technical users to upload floor plans, place various indoor mapping elements, and generate standards-compliant IMDF files.",
+    "default_branch": "main",
+    "languages": {
+      "JavaScript": 8
+    },
+    "topics": [],
+    "licence": "MIT License",
+    "file_count": 21
+  },
+  "start_here": {
+    "readme": "README.md",
+    "agents_md": "AGENTS.md",
+    "entry_points": [],
+    "decision_records": [],
+    "build_config": [
+      "package.json"
+    ],
+    "source_roots": [
+      ".",
+      "public"
+    ]
+  },
+  "documentation": [
+    {
+      "path": ".github/copilot-instructions.md",
+      "title": "Copilot instructions — IMDF-Builder-for-Places",
+      "lines": 30,
+      "headings": [
+        {
+          "level": 2,
+          "text": "What this repo is",
+          "anchor": "what-this-repo-is"
+        },
+        {
+          "level": 2,
+          "text": "Repo shape",
+          "anchor": "repo-shape"
+        },
+        {
+          "level": 2,
+          "text": "Conventions",
+          "anchor": "conventions"
+        },
+        {
+          "level": 2,
+          "text": "Never",
+          "anchor": "never"
+        }
+      ]
+    },
+    {
+      "path": "README.md",
+      "title": "IMDF Builder for Microsoft Places",
+      "lines": 339,
+      "headings": [
+        {
+          "level": 2,
+          "text": "Features",
+          "anchor": "features"
+        },
+        {
+          "level": 2,
+          "text": "Quick Start",
+          "anchor": "quick-start"
+        },
+        {
+          "level": 3,
+          "text": "Using Docker (Recommended)",
+          "anchor": "using-docker-recommended"
+        },
+        {
+          "level": 3,
+          "text": "Running Locally (Without Docker)",
+          "anchor": "running-locally-without-docker"
+        },
+        {
+          "level": 3,
+          "text": "Building Docker Image Locally (Optional)",
+          "anchor": "building-docker-image-locally-optional"
+        },
+        {
+          "level": 2,
+          "text": "How to Use",
+          "anchor": "how-to-use"
+        },
+        {
+          "level": 3,
+          "text": "Step 1: Create a New Project",
+          "anchor": "step-1-create-a-new-project"
+        },
+        {
+          "level": 3,
+          "text": "Step 2: Upload Floor Plan",
+          "anchor": "step-2-upload-floor-plan"
+        },
+        {
+          "level": 3,
+          "text": "Step 3: Georeference the Plan",
+          "anchor": "step-3-georeference-the-plan"
+        },
+        {
+          "level": 3,
+          "text": "Step 4: Add Levels",
+          "anchor": "step-4-add-levels"
+        },
+        {
+          "level": 3,
+          "text": "Step 5: Place Items on the Floor Plan",
+          "anchor": "step-5-place-items-on-the-floor-plan"
+        },
+        {
+          "level": 3,
+          "text": "Step 6: Edit Item Properties",
+          "anchor": "step-6-edit-item-properties"
+        },
+        {
+          "level": 3,
+          "text": "Step 7: Fill in the Address, then Export IMDF Files",
+          "anchor": "step-7-fill-in-the-address-then-export-imdf-files"
+        },
+        {
+          "level": 3,
+          "text": "Step 8: Upload to Microsoft Places",
+          "anchor": "step-8-upload-to-microsoft-places"
+        },
+        {
+          "level": 2,
+          "text": "IMDF Compliance",
+          "anchor": "imdf-compliance"
+        },
+        {
+          "level": 2,
+          "text": "Project Structure",
+          "anchor": "project-structure"
+        },
+        {
+          "level": 2,
+          "text": "Technical Details",
+          "anchor": "technical-details"
+        },
+        {
+          "level": 3,
+          "text": "Backend (Node.js/Express)",
+          "anchor": "backend-nodejsexpress"
+        },
+        {
+          "level": 3,
+          "text": "Testing",
+          "anchor": "testing"
+        },
+        {
+          "level": 3,
+          "text": "Frontend",
+          "anchor": "frontend"
+        },
+        {
+          "level": 3,
+          "text": "Docker",
+          "anchor": "docker"
+        },
+        {
+          "level": 2,
+          "text": "Browser Compatibility",
+          "anchor": "browser-compatibility"
+        },
+        {
+          "level": 2,
+          "text": "Troubleshooting",
+          "anchor": "troubleshooting"
+        },
+        {
+          "level": 3,
+          "text": "Issue: Cannot upload floor plan",
+          "anchor": "issue-cannot-upload-floor-plan"
+        },
+        {
+          "level": 3,
+          "text": "Issue: Docker container won't start",
+          "anchor": "issue-docker-container-wont-start"
+        },
+        {
+          "level": 3,
+          "text": "Issue: Items not appearing on canvas",
+          "anchor": "issue-items-not-appearing-on-canvas"
+        },
+        {
+          "level": 3,
+          "text": "Issue: Exported rooms are the wrong size or in the wrong place",
+          "anchor": "issue-exported-rooms-are-the-wrong-size-or-in-the-wrong-place"
+        },
+        {
+          "level": 3,
+          "text": "Issue: footprint.geojson is empty",
+          "anchor": "issue-footprintgeojson-is-empty"
+        },
+        {
+          "level": 2,
+          "text": "Contributing",
+          "anchor": "contributing"
+        },
+        {
+          "level": 2,
+          "text": "License",
+          "anchor": "license"
+        },
+        {
+          "level": 2,
+          "text": "Support",
+          "anchor": "support"
+        },
+        {
+          "level": 2,
+          "text": "References",
+          "anchor": "references"
+        }
+      ]
+    },
+    {
+      "path": "docs/USAGE.md",
+      "title": "Using the IMDF Builder",
+      "lines": 182,
+      "headings": [
+        {
+          "level": 2,
+          "text": "Order of work",
+          "anchor": "order-of-work"
+        },
+        {
+          "level": 2,
+          "text": "1. Georeferencing (the part that matters most)",
+          "anchor": "1-georeferencing-the-part-that-matters-most"
+        },
+        {
+          "level": 3,
+          "text": "Set the anchor on something you can identify",
+          "anchor": "set-the-anchor-on-something-you-can-identify"
+        },
+        {
+          "level": 3,
+          "text": "Calibrate the scale from a known distance",
+          "anchor": "calibrate-the-scale-from-a-known-distance"
+        },
+        {
+          "level": 3,
+          "text": "Rotation",
+          "anchor": "rotation"
+        },
+        {
+          "level": 2,
+          "text": "2. Levels",
+          "anchor": "2-levels"
+        },
+        {
+          "level": 3,
+          "text": "Multi-page PDFs — one level per page",
+          "anchor": "multi-page-pdfs--one-level-per-page"
+        },
+        {
+          "level": 2,
+          "text": "3. Drawing",
+          "anchor": "3-drawing"
+        },
+        {
+          "level": 3,
+          "text": "L-shaped and irregular rooms",
+          "anchor": "l-shaped-and-irregular-rooms"
+        },
+        {
+          "level": 3,
+          "text": "Rooms that need a hole in them",
+          "anchor": "rooms-that-need-a-hole-in-them"
+        },
+        {
+          "level": 2,
+          "text": "4. Properties and Exchange IDs",
+          "anchor": "4-properties-and-exchange-ids"
+        },
+        {
+          "level": 2,
+          "text": "5. Address",
+          "anchor": "5-address"
+        },
+        {
+          "level": 2,
+          "text": "6. Pre-export checklist",
+          "anchor": "6-pre-export-checklist"
+        },
+        {
+          "level": 2,
+          "text": "7. What you get",
+          "anchor": "7-what-you-get"
+        },
+        {
+          "level": 2,
+          "text": "8. Saving and loading",
+          "anchor": "8-saving-and-loading"
+        }
+      ]
+    }
+  ],
+  "code": {
+    "source_roots": [
+      ".",
+      "public"
+    ],
+    "symbol_source": "repomix (tree-sitter signatures)",
+    "routes": [],
+    "files": [
+      {
+        "path": "imdf.js",
+        "symbols": [
+          {
+            "kind": "function",
+            "name": "labels",
+            "parent": "",
+            "signature": "function labels(value, lang)"
+          },
+          {
+            "kind": "function",
+            "name": "requiredLabels",
+            "parent": "",
+            "signature": "function requiredLabels(value, fallback, lang)"
+          },
+          {
+            "kind": "function",
+            "name": "displayPoint",
+            "parent": "",
+            "signature": "function displayPoint(coords)"
+          },
+          {
+            "kind": "function",
+            "name": "polygonGeometry",
+            "parent": "",
+            "signature": "function polygonGeometry(input)"
+          },
+          {
+            "kind": "function",
+            "name": "lineGeometry",
+            "parent": "",
+            "signature": "function lineGeometry(input)"
+          },
+          {
+            "kind": "function",
+            "name": "positionsOf",
+            "parent": "",
+            "signature": "function positionsOf(geometry)"
+          },
+          {
+            "kind": "function",
+            "name": "featureCollection",
+            "parent": "",
+            "signature": "function featureCollection(features)"
+          },
+          {
+            "kind": "function",
+            "name": "emptyCollection",
+            "parent": "",
+            "signature": "function emptyCollection()"
+          },
+          {
+            "kind": "function",
+            "name": "generateIMDFFiles",
+            "parent": "",
+            "signature": "function generateIMDFFiles(projectData)"
+          },
+          {
+            "kind": "const",
+            "name": "addPositions",
+            "parent": "",
+            "signature": "const addPositions = (levelId, positions) =>"
+          }
+        ]
+      },
+      {
+        "path": "public/js/app.js",
+        "symbols": [
+          {
+            "kind": "class",
+            "name": "IMDFBuilder",
+            "parent": "",
+            "signature": "class IMDFBuilder"
+          },
+          {
+            "kind": "const",
+            "name": "set",
+            "parent": "",
+            "signature": "const set = (id, value) =>"
+          },
+          {
+            "kind": "const",
+            "name": "dismiss",
+            "parent": "",
+            "signature": "const dismiss = () =>"
+          }
+        ]
+      },
+      {
+        "path": "public/js/geo.js",
+        "symbols": [
+          {
+            "kind": "class",
+            "name": "Georeference",
+            "parent": "",
+            "signature": "class Georeference"
+          },
+          {
+            "kind": "function",
+            "name": "signedArea",
+            "parent": "",
+            "signature": "function signedArea(ring)"
+          },
+          {
+            "kind": "function",
+            "name": "closeRing",
+            "parent": "",
+            "signature": "function closeRing(ring)"
+          },
+          {
+            "kind": "function",
+            "name": "toCounterClockwise",
+            "parent": "",
+            "signature": "function toCounterClockwise(ring)"
+          },
+          {
+            "kind": "function",
+            "name": "boundingRing",
+            "parent": "",
+            "signature": "function boundingRing(positions, padMetres, refLat)"
+          },
+          {
+            "kind": "function",
+            "name": "centroidOfRing",
+            "parent": "",
+            "signature": "function centroidOfRing(ring)"
+          },
+          {
+            "kind": "function",
+            "name": "bufferLine",
+            "parent": "",
+            "signature": "function bufferLine(coords, widthMetres, refLat)"
+          },
+          {
+            "kind": "function",
+            "name": "num",
+            "parent": "",
+            "signature": "function num(v, fallback)"
+          },
+          {
+            "kind": "function",
+            "name": "positive",
+            "parent": "",
+            "signature": "function positive(v, fallback)"
+          },
+          {
+            "kind": "function",
+            "name": "round7",
+            "parent": "",
+            "signature": "function round7(n)"
+          }
+        ]
+      },
+      {
+        "path": "server.js",
+        "symbols": [
+          {
+            "kind": "const",
+            "name": "ensureDirectories",
+            "parent": "",
+            "signature": "const ensureDirectories = async () =>"
+          },
+          {
+            "kind": "function",
+            "name": "validateProjectId",
+            "parent": "",
+            "signature": "function validateProjectId(id)"
+          },
+          {
+            "kind": "function",
+            "name": "getProjectFilePath",
+            "parent": "",
+            "signature": "function getProjectFilePath(id)"
+          }
+        ]
+      }
+    ]
+  },
+  "tests": [
+    "test/geo.test.js",
+    "test/helpers/fabric-stub.js",
+    "test/imdf.test.js",
+    "test/project-roundtrip.test.js"
+  ],
+  "operations": [
+    ".env.example",
+    ".github/workflows/docker-publish.yml",
+    "Dockerfile",
+    "docker-compose.yml"
+  ],
+  "limitations": {
+    "unparsed_languages": [],
+    "excluded_dirs": [
+      "public/lib"
+    ],
+    "code_map_truncated": false,
+    "code_map_symbols_capped": false,
+    "tracked_files_only": true
+  },
+  "generated": {
+    "source_commit": "8c37f632288c3a80b065ceb8fd15c4f66759964b",
+    "content_hash": "c84ef59015256bb1",
+    "generator": "navgen"
+  }
+}
