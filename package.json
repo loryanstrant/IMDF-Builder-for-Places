@@ -19,6 +19,6 @@
     "archiver": "^6.0.1",
     "express": "^4.22.3",
     "express-rate-limit": "^8.7.1",
-    "multer": "^2.4.0"
+    "multer": "^2.5.0"
   }
 }
